@@ -7,16 +7,17 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 import streamlit as st
-
+try:
+    from streamlit_autorefresh import st_autorefresh
+    AUTOREFRESH_AVAILABLE = True
+except ImportError:
+    AUTOREFRESH_AVAILABLE = False
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
 sys.path.insert(0, "scripts")
 from infer import load_all, score_all, derive_threshold
-from drift import check_drift, overall_drift_status, PSI_STABLE_THRESHOLD, PSI_MODERATE_THRESHOLD
-import pickle
 
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -29,6 +30,7 @@ MODEL_COLORS = {
     "stat":     "#FF8C42",
     "lstm":     "#4C9BE8",
     "patchtst": "#2ECC9A",
+    "nhits":    "#8B5CF6",
     "xgboost":  "#F5C842",
     "iforest":  "#F16B6B",
     "ensemble": "#C084FC",
@@ -38,6 +40,7 @@ MODEL_LABELS = {
     "stat":     "StatDetector",
     "lstm":     "LSTM Forecaster",
     "patchtst": "PatchTST",
+    "nhits":    "NHITS (Darts)",
     "xgboost":  "XGBoost",
     "iforest":  "Isolation Forest",
     "ensemble": "Ensemble",
@@ -47,6 +50,7 @@ MODEL_DESCRIPTIONS = {
     "stat":     "Purpose-built per-channel statistical detector. Catches frozen sensors (variance collapse) and stuck-binary contextual breaks that forecasters are structurally blind to. Primary recall driver.",
     "lstm":     "Predicts the next timestep from a rolling window. High prediction error = anomaly. Crushes spike and contextual anomalies, but cannot see frozen sensors (a constant value is trivially easy to predict).",
     "patchtst": "Transformer over non-overlapping patches of the series. Captures long-range periodic patterns. Similar strengths/blind-spots to LSTM.",
+    "nhits":    "Hierarchical multi-rate forecasting architecture (via the Darts library) — a more sophisticated alternative to the from-scratch LSTM/PatchTST. Same role, same blind spots (forecast-based, misses frozen sensors), often a bit more accurate.",
     "xgboost":  "Rolling statistical features → next-step prediction via gradient-boosted trees. Good for level-shifts; also forecast-based so shares the frozen-sensor blind spot.",
     "iforest":  "Isolation Forest on rolling features. Points that are easy to isolate in feature space are anomalous. Unsupervised baseline.",
 }
@@ -292,21 +296,72 @@ with tab_cfg:
     st.caption("Configure your run below, then click **Run Analysis** to score data with the selected models.")
     st.divider()
 
+    # ── AUTO-RUN ── (placed first: how many files/chunks get loaded below
+    # scales with this, so it needs to be known before that UI renders)
+    st.subheader("Automatic Analysis")
+    st.caption(
+        "Optionally re-run analysis on a schedule — useful for a dashboard left "
+        "open, so it stays current without needing someone to click Run "
+        "Analysis manually. The number of files loaded scales with the "
+        "interval: each file/chunk covers 5 minutes, so 30 minutes = 6 files, "
+        "25 minutes = 5 files, and so on."
+    )
+    if not AUTOREFRESH_AVAILABLE:
+        st.warning("This needs one more package: run `pip install streamlit-autorefresh` "
+                  "and restart the app to enable it.")
+        auto_run_enabled = False
+        auto_run_minutes = 30
+    else:
+        ac1, ac2, ac3 = st.columns([1, 1, 2])
+        with ac1:
+            auto_run_enabled = st.checkbox("Enable auto-run", value=False, key="auto_run_enabled")
+        with ac2:
+            auto_run_minutes = st.number_input(
+                "Every N minutes", min_value=5, max_value=240, value=30, step=5,
+                key="auto_run_minutes", disabled=not auto_run_enabled,
+            )
+        with ac3:
+            if auto_run_enabled:
+                last_ts = st.session_state.get("last_auto_run_ts")
+                file_note = f"loading the {max(1, int(auto_run_minutes)//5)} most recent file(s)/chunk(s)"
+                if last_ts is None:
+                    st.info(f"Auto-run is ON — first run starts immediately, {file_note}.")
+                else:
+                    elapsed = time.time() - last_ts
+                    remaining = max(0, auto_run_minutes * 60 - elapsed)
+                    mins, secs = divmod(int(remaining), 60)
+                    st.info(f"Auto-run is ON — last ran at "
+                           f"{time.strftime('%H:%M:%S', time.localtime(last_ts))}, "
+                           f"next run in {mins:02d}:{secs:02d}, {file_note}.")
+
+        if auto_run_enabled:
+            st_autorefresh(interval=30_000, key="auto_run_ticker")
+
+    n_files_for_interval = max(1, int(auto_run_minutes) // 5)
+
+    st.divider()
+
     # ── Row 1: Paths ──
     col_data, col_model = st.columns(2)
     with col_data:
         st.subheader("📂 Data Source")
         source_mode = st.radio(
-            "Source", ["Local CSV files", "Kafka topic"], horizontal=True,
-            help="Local files: read from a folder written by generate_telemetry.py "
-                 "(--sink csv/both). Kafka: consume the most recent chunks directly "
-                 "from a topic (--sink kafka/both). Requires a running broker.",
+            "Source", ["Kafka topic", "Local CSV files"], horizontal=True,
+            help="Kafka: consume the most recent chunks directly from a topic "
+                 "(--sink kafka/both). Requires a running broker. Local files: "
+                 "read from a folder written by generate_telemetry.py (--sink csv/both).",
         )
         if source_mode == "Local CSV files":
             data_dir = st.text_input("Telemetry stream folder", value="live_telemetry_stream",
                                       help="Folder where generate_telemetry.py writes CSV files.")
-            n_files  = st.slider("Files to load (most recent)", 1, 50, 10,
-                                  help="Each file = 300 rows / 5-minute chunk.")
+            if auto_run_enabled:
+                n_files = n_files_for_interval
+                st.slider("Files to load (most recent)", 1, 50, n_files, disabled=True,
+                         help="Locked to the auto-run interval above — each file covers "
+                              "5 minutes, so this always matches the schedule.")
+            else:
+                n_files  = st.slider("Files to load (most recent)", 1, 50, 10,
+                                      help="Each file = 300 rows / 5-minute chunk.")
             available = sorted(glob.glob(os.path.join(data_dir, "*.csv")))
             if available:
                 st.success(f"{len(available)} files found in `{data_dir}`")
@@ -318,9 +373,15 @@ with tab_cfg:
         else:
             kafka_bootstrap = st.text_input("Kafka bootstrap servers", value="localhost:9092")
             kafka_topic     = st.text_input("Kafka topic", value="telemetry.raw")
-            n_files = st.slider("Chunks to load (most recent)", 1, 50, 10,
-                                 help="Each Kafka message = one 300-row chunk, same "
-                                      "granularity as a CSV file.")
+            if auto_run_enabled:
+                n_files = n_files_for_interval
+                st.slider("Chunks to load (most recent)", 1, 50, n_files, disabled=True,
+                         help="Locked to the auto-run interval above — each chunk covers "
+                              "5 minutes, so this always matches the schedule.")
+            else:
+                n_files = st.slider("Chunks to load (most recent)", 1, 50, 10,
+                                     help="Each Kafka message = one 300-row chunk, same "
+                                          "granularity as a CSV file.")
             data_dir = None
             st.caption("Data is fetched fresh from the topic each time you click Run — "
                        "no caching, so you always see the current stream position.")
@@ -334,6 +395,7 @@ with tab_cfg:
             if os.path.exists(os.path.join(model_dir, "stat.pkl")):          available_models["stat"] = True
             if os.path.exists(os.path.join(model_dir, "lstm.pt")):           available_models["lstm"] = True
             if os.path.exists(os.path.join(model_dir, "patchtst.pt")):       available_models["patchtst"] = True
+            if os.path.exists(os.path.join(model_dir, "nhits.pt")):          available_models["nhits"] = True
             if os.path.exists(os.path.join(model_dir, "xgboost.pkl")):       available_models["xgboost"] = True
             if os.path.exists(os.path.join(model_dir, "iforest.pkl")):       available_models["iforest"] = True
         if available_models:
@@ -358,8 +420,8 @@ with tab_cfg:
     st.caption("Only trained models can be selected. Choose one or more. "
               "StatDetector + a forecaster is the recommended minimum combination.")
 
-    mcols = st.columns(5)
-    model_names = ["stat", "lstm", "patchtst", "xgboost", "iforest"]
+    mcols = st.columns(6)
+    model_names = ["stat", "lstm", "patchtst", "nhits", "xgboost", "iforest"]
     selected = {}
     for i, name in enumerate(model_names):
         with mcols[i]:
@@ -410,11 +472,12 @@ with tab_cfg:
         )
     with dcol3:
         k_val = st.slider(
-            "Threshold k", 1.0, 15.0, 6.0, 0.5,
+            "Threshold k", 1.0, 15.0, 4.0, 0.5,
             help=(
                 "Higher k = stricter = fewer but higher-confidence detections.\n"
                 "Lower k = more sensitive = more detections including weaker ones.\n"
-                "Start at 6–8 to reduce false alarms; drop toward 4 if missing real events."
+                "Default is 4, based on validated real-world testing on this project's "
+                "live data. Raise toward 6–8 if you're seeing too many false alarms."
             ),
         )
     with dcol4:
@@ -508,7 +571,20 @@ with tab_cfg:
         width='stretch',
     )
 
-    if run_clicked:
+    # Auto-run fires the exact same analysis block below as a manual click --
+    # same code path, same validation, nothing auto-run-specific to keep in
+    # sync separately. Respects the same readiness gate as the button (won't
+    # fire if no models are selected / data isn't ready).
+    auto_run_triggered = False
+    if AUTOREFRESH_AVAILABLE and auto_run_enabled and not run_disabled:
+        last_ts = st.session_state.get("last_auto_run_ts")
+        if last_ts is None or (time.time() - last_ts) >= auto_run_minutes * 60:
+            auto_run_triggered = True
+            st.session_state["last_auto_run_ts"] = time.time()
+
+    if run_clicked or auto_run_triggered:
+        if auto_run_triggered:
+            st.caption("🔁 Running automatically on schedule...")
         with st.status("Running analysis...", expanded=True) as status:
             # Load data
             st.write("📂 Loading telemetry data...")
@@ -550,44 +626,6 @@ with tab_cfg:
             elapsed = time.time() - t0
             st.write(f"   → Done in {elapsed:.2f}s")
 
-            # Compute thresholds and predictions with three false-alarm protections:
-            #
-            # 1. Score smoothing (rolling median) — kills single-second noise spikes
-            #    before thresholding without affecting sustained anomaly regions.
-            #
-            # 2. Log-space thresholding — scores span many orders of magnitude.
-            #    IQR/MAD on raw scores is dominated by the bulk of near-zero normal
-            #    scores; doing it in log-space gives equal weight to all decades and
-            #    produces a much more stable threshold that doesn't drift up when
-            #    big anomalies are present.
-            #
-            # 3. Minimum duration filter — discard any flagged run shorter than
-            #    min_duration seconds. Your generator injects 30–90s anomalies, so
-            #    anything shorter than ~10s is almost certainly noise.
-
-            # Compute thresholds and predictions with false-alarm protections:
-            #
-            # 1. Score smoothing (rolling median) — kills single-second noise spikes.
-            #
-            # 2. Model-aware thresholding:
-            #    - StatDetector outputs LINEAR z-scores (median + k·MAD directly,
-            #      since the score already means "std devs from normal").
-            #    - Forecasting/tree models span orders of magnitude, so they use
-            #      LOG-space thresholding, robust to degenerate near-zero scores.
-            #
-            # 3. Minimum duration filter — discard flagged runs shorter than
-            #    min_duration seconds.
-            #
-            # 4. SMART CONSENSUS ("consensus" pseudo-model): StatDetector is the
-            #    primary recall driver (it alone catches frozen sensors, which
-            #    forecasters are structurally blind to), but used alone it has
-            #    too many false positives from natural random-walk noise. The
-            #    fix, validated on a labeled test set: confirm an anomaly when
-            #    EITHER (a) StatDetector's score is strongly elevated on its own,
-            #    OR (b) StatDetector is weakly elevated AND at least one
-            #    forecasting model agrees. This combination measured F1=0.74 vs
-            #    F1=0.68 for StatDetector alone and far below that for any single
-            #    forecaster (which miss frozen sensors completely).
 
             LINEAR_SCORE_MODELS = {"stat"}
 
@@ -631,6 +669,32 @@ with tab_cfg:
                         out[s:e] = 0
                 return out
 
+            def _warmup_length(model_name: str) -> int:
+                """
+                How many rows at the start of ANY scored batch have no real
+                signal yet -- just a back-filled placeholder from having
+                insufficient history. Every downstream use of a model's
+                prediction (its own panel, AND the Smart Consensus
+                computation) needs to mask this region out, or a merely
+                elevated placeholder value can get flagged as a detection
+                purely because it happens to sit above threshold, which is
+                an artifact of having no data yet, not a real anomaly.
+
+                Forecasters (lstm/patchtst/nhits/xgboost) expose this
+                directly as bundle["window"]. StatDetector does NOT --
+                its rolling window lives on the detector OBJECT
+                (bundle["detector"].window), not as a top-level bundle key,
+                so a plain bundle.get("window") silently returns None for it
+                and its warm-up was never masked anywhere until this fix.
+                """
+                b = active_bundles.get(model_name, {})
+                if "window" in b:
+                    return int(b["window"])
+                det = b.get("detector")
+                if det is not None and hasattr(det, "window"):
+                    return int(det.window)
+                return 0
+
             thresholds = {}
             predictions = {}
             smoothed_scores = {}
@@ -638,16 +702,6 @@ with tab_cfg:
             for name, sc in all_scores.items():
                 sc_smooth = _smooth(sc, score_smoothing)
                 if name in LINEAR_SCORE_MODELS:
-                    # StatDetector: use the STABLE nominal median/MAD saved at
-                    # training time (fixes the original bug: a live median/MAD
-                    # computed on whatever window is currently loaded collapses
-                    # when the elevated state occupies anywhere close to half
-                    # the window — verified: at ~54% elevated the threshold
-                    # exceeded the max observed score, so nothing was ever
-                    # flagged), BUT still scale by the LIVE k_val slider
-                    # (fixes a regression: hardcoding 3 fixed precomputed
-                    # threshold values ignored the slider entirely and could
-                    # land far too low for a given deployment's actual scale).
                     saved_bundle = active_bundles.get(name, {})
                     saved_thr = None
                     if "nominal_median" in saved_bundle and "nominal_mad" in saved_bundle:
@@ -683,6 +737,10 @@ with tab_cfg:
                         thr = _log_threshold(sc_smooth, thr_method, k_val)
                         threshold_basis[name] = "live (log-MAD, no saved threshold — retrain to fix)"
                 pred = (sc_smooth > thr).astype(int)
+                win = _warmup_length(name)
+                if win:
+                    pred[:min(win, len(pred))] = 0
+
                 pred = _apply_min_duration(pred, min_duration)
                 thresholds[name]      = thr
                 predictions[name]     = pred
@@ -691,7 +749,7 @@ with tab_cfg:
             # Smart consensus. Computed whenever at least one forecaster is
             # selected, since the forecaster-agreement path (added below) is
             # useful even without StatDetector.
-            forecaster_names = [n for n in ("lstm", "patchtst", "xgboost") if n in predictions]
+            forecaster_names = [n for n in ("lstm", "patchtst", "nhits", "xgboost") if n in predictions]
             min_forecaster_agree = 2
 
             if (("stat" in smoothed_scores and use_smart_consensus) or len(forecaster_names) >= min_forecaster_agree):
@@ -727,6 +785,20 @@ with tab_cfg:
                         stat_weak_thr   = _linear_threshold(stat_sc, max(1.0, k_val * 0.6))
                     stat_strong = (stat_sc > stat_strong_thr).astype(int)
                     stat_weak   = (stat_sc > stat_weak_thr).astype(int)
+
+                    # This is the gap that let warm-up artifacts through even
+                    # when each model's OWN panel was correctly masked: this
+                    # block computes stat_strong/stat_weak fresh from the raw
+                    # smoothed score, not from the already-masked
+                    # predictions["stat"] array, so StatDetector's warm-up
+                    # region (which never had a bundle-level "window" key,
+                    # unlike the forecasters) fed unmasked signal directly
+                    # into the consensus regardless of any per-panel masking.
+                    stat_win = _warmup_length("stat")
+                    if stat_win:
+                        stat_strong[:min(stat_win, len(stat_strong))] = 0
+                        stat_weak[:min(stat_win, len(stat_weak))] = 0
+
                     display_basis = stat_sc
                     display_thr   = stat_strong_thr
                 else:
@@ -750,6 +822,18 @@ with tab_cfg:
                 consensus_pred = np.maximum(consensus_pred, fc_strong_agree)
                 consensus_pred = _apply_min_duration(consensus_pred, min_duration)
 
+                # Track WHICH path confirmed each timestep, so "why was this
+                # shaded as confirmed?" always has a direct, checkable answer
+                # instead of requiring a manual investigation every time.
+                # 1 = StatDetector alone was strongly elevated
+                # 2 = StatDetector only weakly elevated, backed by 1 forecaster
+                # 3 = 2+ forecasters agreed, independent of StatDetector
+                consensus_reason = np.zeros(len(consensus_pred), dtype=np.int8)
+                consensus_reason[(stat_weak.astype(bool)) & (fc_any_agree.astype(bool))] = 2
+                consensus_reason[fc_strong_agree.astype(bool)] = 3
+                consensus_reason[stat_strong.astype(bool)] = 1   # strongest, evaluated last so it wins ties
+                consensus_reason = consensus_reason * (consensus_pred > 0)  # only meaningful where actually confirmed
+
                 predictions["consensus"]     = consensus_pred
                 smoothed_scores["consensus"] = display_basis
                 thresholds["consensus"]      = display_thr
@@ -765,6 +849,9 @@ with tab_cfg:
                 "n_files": n_files, "enabled": enabled,
                 "bundles": active_bundles,
                 "threshold_basis": threshold_basis,
+                "consensus_weak_thr": stat_weak_thr if "stat" in smoothed_scores and use_smart_consensus else None,
+                "consensus_reason": consensus_reason if "consensus" in predictions else None,
+                "consensus_forecaster_names": forecaster_names if "consensus" in predictions else [],
             }
             st.session_state["run_config"] = {
                 "data_dir": data_dir, "model_dir": model_dir,
@@ -894,6 +981,22 @@ with tab_results:
                                annotation_text=f"Threshold ({thr:.4f})",
                                annotation_position="top right")
 
+                # The Confirmed panel specifically can shade a region for
+                # reasons that have NOTHING to do with this displayed score
+                # crossing the line above -- e.g. two forecasters agreeing
+                # independently of StatDetector, or StatDetector crossing a
+                # much lower "weak" threshold that isn't shown by default.
+                # Showing only the strong threshold line implied "shading
+                # means this line was crossed," which is only true for one
+                # of three paths and was a real source of confusion. Show
+                # the weak line too, and say so explicitly.
+                if name == "consensus":
+                    weak_thr_display = r.get("consensus_weak_thr")
+                    if weak_thr_display is not None:
+                        fig2.add_hline(y=weak_thr_display, line_dash="dot", line_color=color,
+                                       annotation_text=f"Weak threshold ({weak_thr_display:.4f})",
+                                       annotation_position="bottom right")
+
                 # Bound the y-axis a few decades above the threshold/max signal
                 # instead of letting Plotly auto-scale to a rare extreme outlier
                 # (which compresses the real signal into an unreadable sliver).
@@ -907,10 +1010,70 @@ with tab_results:
                 )
                 st.plotly_chart(fig2, width='stretch')
 
+                if name == "consensus":
+                    st.caption(
+                        "A shaded region here does NOT always mean this score crossed a "
+                        "line above — that's only true when StatDetector alone was "
+                        "strongly elevated. It can also appear when StatDetector crossed "
+                        "only the weak threshold *and* one forecaster agreed, or when 2+ "
+                        "forecasters agreed with each other regardless of what "
+                        "StatDetector's score was doing at all. Use \"Why was this "
+                        "confirmed?\" below to see the exact reason for any specific event."
+                    )
+
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Max score",    f"{sc.max():.4f}")
                 c2.metric("Median score", f"{np.median(sc):.6f}")
                 c3.metric("Threshold",    f"{thr:.4f}")
+
+                # Confirmed-specific transparency: exactly which of the three
+                # consensus paths fired for each event, and which individual
+                # models actually agreed — so "why was this shaded?" always
+                # has a direct, checkable answer in the app itself instead of
+                # requiring a manual investigation every time it comes up.
+                if name == "consensus" and pred.sum() > 0:
+                    st.divider()
+                    st.markdown("**Why was this confirmed?**")
+                    reason_arr = r.get("consensus_reason")
+                    fc_names_used = r.get("consensus_forecaster_names", [])
+                    if reason_arr is None:
+                        st.caption("Reason tracking unavailable for this run — rerun "
+                                  "Configure & Run to enable it.")
+                    else:
+                        events_c = build_event_options(pred, sc, x)
+                        if events_c:
+                            chosen_c = render_event_navigator(events_c, key=f"confirmed_{name}")
+                            idx_c = chosen_c["peak_idx"]
+                            reason_code = int(reason_arr[idx_c])
+                            reason_text = {
+                                1: "**StatDetector alone was strongly elevated** — confident "
+                                   "enough on its own, no forecaster backup needed. This path "
+                                   "typically catches frozen sensors and stuck-binary events "
+                                   "that forecasters structurally can't see.",
+                                2: "**StatDetector was only mildly elevated** — not enough to "
+                                   "confirm alone — **but at least one forecaster independently "
+                                   "agreed**, which was enough to promote it to confirmed. This "
+                                   "is the most permissive of the three paths: it only needs "
+                                   "ONE forecaster, not two, as long as StatDetector shows even "
+                                   "a mild signal at the same moment.",
+                                3: "**Two or more forecasters agreed independently**, regardless "
+                                   "of what StatDetector showed. This path exists because "
+                                   "forecasters are reliable on their own for spike/contextual "
+                                   "anomalies — it doesn't require StatDetector's permission.",
+                                0: "No specific reason recorded for this exact point (it may sit "
+                                   "at the edge of a confirmed region due to smoothing).",
+                            }.get(reason_code, "Unknown.")
+                            st.markdown(reason_text)
+
+                            if fc_names_used:
+                                agreeing = [n for n in fc_names_used
+                                           if n in predictions and predictions[n][idx_c]]
+                                st.caption(
+                                    f"Forecasters that agreed at this exact point: "
+                                    f"{', '.join(MODEL_LABELS.get(n, n) for n in agreeing) or 'none'}."
+                                )
+                        else:
+                            st.caption("No distinct confirmed events to explain here.")
 
                 # SHAP explainability — only meaningful for XGBoost. TreeExplainer
                 # gives fast, exact feature attributions for tree models; the
@@ -1099,7 +1262,7 @@ with tab_deep:
         # per channel keeps the chart readable and fast.
         non_ens_preds = [np.asarray(p).ravel() for k, p in predictions_d.items() if k != "ensemble"]
         if non_ens_preds:
-            any_flag = (np.sum(non_ens_preds, axis=0) >= 2).astype(int)
+            any_flag = np.clip(np.sum(non_ens_preds, axis=0), 0, 1).astype(int)
         else:
             any_flag = np.zeros(len(df_d), dtype=int)
 
@@ -1140,7 +1303,7 @@ with tab_deep:
         )
         st.plotly_chart(fig3, width='stretch')
 
-        st.caption("Red bands mark where at least 2 models flagged an anomaly. "
+        st.caption("Red bands mark where at least one model flagged an anomaly. "
                    "Use the per-model charts in the Results tab to see which model fired where.")
 
 
@@ -1203,23 +1366,6 @@ with tab_compare:
 
         st.divider()
 
-        # ── Agreement matrix ──
-        st.subheader("Model Agreement Matrix")
-        st.caption("% of timesteps where both models assigned the same label (anomaly or normal).")
-        agree = np.zeros((len(named), len(named)))
-        for i, n1 in enumerate(named):
-            for j, n2 in enumerate(named):
-                agree[i, j] = (predictions[n1] == predictions[n2]).mean() * 100
-        fig6 = px.imshow(
-            agree.round(1),
-            x=[MODEL_LABELS.get(n, n) for n in named],
-            y=[MODEL_LABELS.get(n, n) for n in named],
-            text_auto=True, color_continuous_scale="Blues", zmin=50, zmax=100,
-            title="Agreement Matrix (%)",
-        )
-        fig6.update_layout(height=380, template="plotly_dark")
-        st.plotly_chart(fig6, width='stretch')
-
         # ── Consensus ──
         st.subheader("Consensus Detections")
         vote = sum(predictions[n] for n in named)
@@ -1258,6 +1404,16 @@ with tab_compare:
 # TAB — Data Health (drift monitoring)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_health:
+    # Imported unconditionally at the top of the tab, not inside the button
+    # handler below — the results section further down runs on ANY rerun
+    # where a previous check is cached in session_state, even if the button
+    # wasn't clicked this run (Streamlit reruns the whole script on every
+    # interaction). Importing only inside the button block meant these names
+    # were undefined whenever that section ran without the button firing,
+    # causing an intermittent NameError.
+    from drift import (check_drift, overall_drift_status,
+                       PSI_STABLE_THRESHOLD, PSI_MODERATE_THRESHOLD)
+
     st.subheader("Has \"normal\" quietly changed?")
     st.caption(
         "Every detector in this app compares live data against a fixed baseline "
@@ -1276,8 +1432,8 @@ with tab_health:
             "Model directory", value=saved_cfg.get("model_dir", "models"), key="health_model_dir",
         )
         health_source = st.radio(
-            "Data source", ["Local CSV files", "Kafka topic"], horizontal=True,
-            index=0 if saved_cfg.get("source_mode", "Local CSV files") == "Local CSV files" else 1,
+            "Data source", ["Kafka topic", "Local CSV files"], horizontal=True,
+            index=0 if saved_cfg.get("source_mode", "Kafka topic") != "Local CSV files" else 1,
             key="health_source",
         )
     with hc2:
@@ -1319,7 +1475,6 @@ with tab_health:
                 st.error(source_err)
             else:
                 import pickle
-                from drift import check_drift, overall_drift_status, PSI_STABLE_THRESHOLD, PSI_MODERATE_THRESHOLD
                 baseline = pickle.load(open(baseline_path, "rb"))
                 sensors_h = baseline["sensors"]
                 missing = [s for s in sensors_h if s not in health_df.columns]

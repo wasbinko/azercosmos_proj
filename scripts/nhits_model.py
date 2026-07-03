@@ -1,50 +1,25 @@
-"""
-NHITS forecaster, via Darts — a "fancier engine" alternative to the
-from-scratch LSTMForecaster/PatchTST in models.py.
-=====================================================================
-Same role as LSTM/PatchTST: predict each channel's next value from recent
-history, score by how wrong the prediction was. NHITS (Neural Hierarchical
-Interpolation for Time Series) is a more sophisticated, purpose-built
-forecasting architecture — hierarchical multi-rate decomposition of the
-signal — that often outperforms a plain LSTM, at the cost of being a
-heavier, third-party dependency instead of a few hand-written lines.
-
-This module deliberately does NOT touch models.py's existing classes. It's
-an additive, optional detector: everything here produces the same
-per-timestep score array shape and the same bundle dict fields
-(sensors, ch_types, scaler, channel_norm, threshold_p99/p995/p999, agg)
-that LSTM/PatchTST already use, so infer.py's score_all() and app.py's UI
-can treat "nhits" as just one more model name in the dispatch table.
-
-A real environment issue, handled here rather than ignored
---------------------------------------------------------------
-PyTorch 2.6+ changed torch.load()'s default to weights_only=True. Darts'
-own checkpoint loading (via PyTorch Lightning) does not yet pass
-weights_only=False through that call, so NHiTSModel.load() raises an
-UnpicklingError on a stock recent PyTorch install. load_nhits() below works
-around this with a narrowly-scoped monkeypatch of torch.load, active only
-for the duration of the load call — safe here because the checkpoint being
-loaded was written by this same training pipeline, not an untrusted file.
-"""
 
 from __future__ import annotations
 import os
 import warnings
 warnings.filterwarnings("ignore")
 import logging
-logging.getLogger("pytorch_lightning").setLevel(logging.ERROR)
-logging.getLogger("lightning").setLevel(logging.ERROR)
+for _name in ("pytorch_lightning", "pytorch_lightning.utilities.rank_zero",
+             "lightning", "lightning_fabric", "lightning_fabric.utilities.rank_zero",
+             "darts.models.forecasting.torch_forecasting_model"):
+    logging.getLogger(_name).setLevel(logging.ERROR)
 
 import numpy as np
 import pandas as pd
-
+NHITS_IMPORT_ERROR = None
 try:
     import torch
     from darts import TimeSeries
     from darts.models import NHiTSModel
     NHITS_AVAILABLE = True
-except ImportError:
+except Exception as e:
     NHITS_AVAILABLE = False
+    NHITS_IMPORT_ERROR = f"{type(e).__name__}: {e}"
 
 
 def _quiet_trainer_kwargs() -> dict:
@@ -67,13 +42,6 @@ def build_series(stat_scaled: np.ndarray, sensors: list[str]):
 def train_nhits(stat_scaled: np.ndarray, sensors: list[str], window: int,
                 epochs: int = 20, num_stacks: int = 3, layer_widths: int = 128,
                 random_state: int = 42):
-    """
-    Train an NHITS model on the full (clean) stationary/scaled training
-    array. Unlike the from-scratch LSTM/PatchTST (trained on many sampled
-    windows), Darts models train directly on the whole series — internally
-    they still learn from sliding windows of length `window`, just without
-    us needing to construct them by hand.
-    """
     if not NHITS_AVAILABLE:
         raise ImportError(
             "darts / pytorch-lightning not installed. Run: "
@@ -92,17 +60,6 @@ def train_nhits(stat_scaled: np.ndarray, sensors: list[str], window: int,
 
 def score_series(model, stat_scaled: np.ndarray, sensors: list[str], window: int,
                  channel_norm: np.ndarray, agg: str = "max") -> np.ndarray:
-    """
-    Score every timestep in stat_scaled using walk-forward one-step-ahead
-    forecasts, then normalise per channel and aggregate — same scoring
-    logic as nn_forecast_errors() in models.py, just fed by Darts'
-    historical_forecasts() instead of a hand-rolled windowing loop (Darts
-    already does this efficiently internally).
-
-    Returns a (T,) score array, NaN-padded for the first `window` timesteps
-    where no prediction exists yet (not enough history) — same convention
-    as errors_to_timestep() elsewhere, callers should forward-fill these.
-    """
     series = build_series(stat_scaled, sensors)
     T = len(stat_scaled)
     if T <= window + 1:
@@ -170,11 +127,6 @@ def save_nhits(model, path: str):
 
 
 def load_nhits(path: str):
-    """
-    Load a saved NHITS model, working around PyTorch 2.6+'s weights_only=True
-    default (see module docstring). The monkeypatch is scoped tightly to just
-    this call and always restored in a finally block, even on error.
-    """
     if not NHITS_AVAILABLE:
         raise ImportError("darts / pytorch-lightning not installed.")
     original_load = torch.load

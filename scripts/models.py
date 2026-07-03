@@ -88,19 +88,6 @@ def _robust_floor(computed_std: float, reference_value: float,
     rel = rel_frac * abs(float(reference_value)) if np.isfinite(reference_value) else 0.0
     return max(computed_std, rel, abs_floor)
 
-
-# Any single channel's z-score is capped at this ceiling before combining
-# across channels. This is a deliberate safety valve against a numerical
-# trap: the per-channel denominators (std_std, level_scale, rate_std,
-# slope_std) are floored against literal division-by-zero, but if a
-# channel's calibrated "normal" variance happens to be genuinely tiny,
-# ordinary live fluctuation divided by that tiny denominator can explode
-# into the thousands or millions -- silently poisoning the aggregate score
-# for the whole dataset (verified: this reproduced a median score of
-# 50,000 across an entire live batch). Every genuine anomaly measured
-# throughout this project scores in the 5-30 range, so a ceiling this high
-# costs zero real detection sensitivity while making the failure mode
-# structurally impossible.
 STAT_SCORE_CEILING = 200.0
 
 

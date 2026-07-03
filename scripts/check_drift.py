@@ -1,26 +1,4 @@
-"""
-Check whether "normal" has quietly changed since the models were trained.
-=============================================================================
-Every one of the five detectors compares live data against a FIXED baseline
-learned once at training time. None of them ask whether that baseline has
-gone stale — component aging, seasonal effects, a firmware change — none of
-that looks like an anomaly to a per-timestep detector; it just looks like
-the new normal, and detection quality quietly degrades as the gap between
-"what was learned" and "what's happening now" grows.
 
-This is the same question tools like Arize AI, Evidently, and WhyLogs are
-built to answer. This script does it locally, using Population Stability
-Index (the same core technique those tools use), comparing your most recent
-telemetry against the baseline saved at training time.
-
-Usage:
-    python scripts/check_drift.py --model_dir models --data_dir live_telemetry_stream
-
-Exit code reflects the worst channel found — useful for a scheduled job
-(cron / Task Scheduler) that only needs to alert you when something's
-actually wrong:
-    0 = stable, 1 = moderate drift, 2 = significant drift, 3 = error
-"""
 import argparse, os, pickle, sys, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np

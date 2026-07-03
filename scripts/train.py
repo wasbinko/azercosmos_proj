@@ -1,41 +1,3 @@
-"""
-Telemetry Anomaly Platform — Training (v4, with MLflow tracking)
-====================================================================
-Trains all five detectors. Key improvements over earlier versions:
-
-1. CONTAMINATION-ROBUST TRAINING for the forecasting/tree models. If the
-   training data contains anomalies (your generator injects ~25%), training
-   on all of it teaches the models that anomalies are "normal", desensitising
-   them. We fix this with a trimmed-training pass: train once, score the
-   training data, drop the worst-scoring fraction, then retrain on the clean
-   remainder. Use --trim 0.0 if you train on already-clean data.
-
-2. StatDetector — a purpose-built per-channel statistical detector (see
-   models.py) that explicitly catches frozen sensors, oscillation bursts,
-   stuck-binary contextual breaks, and level/trend drops. It is calibrated
-   on the (trimmed) clean data.
-
-3. MLflow tracking (on by default, local file store — no server needed).
-   Every run logs: parent-level data/pipeline params, per-model
-   hyperparameters as nested child runs, calibrated nominal thresholds,
-   and — if you pass --eval_dir with a labeled test set — real
-   precision/recall/F1 per model and for the Smart Consensus combination.
-   Model artifacts (the .pt/.pkl files) are attached to each run so you
-   can pull any historical model back out of the tracking store.
-
-   View results with:  mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db
-
-Usage:
-    # If you can generate clean data (ANOMALY_PROBABILITY=0):
-    python scripts/train.py --data_dir data/train_clean --trim 0.0
-
-    # If your training data has anomalies mixed in:
-    python scripts/train.py --data_dir live_telemetry_stream --trim 0.25
-
-    # With evaluation against a labeled test set (logs real P/R/F1 to MLflow):
-    python scripts/train.py --data_dir data/train_clean --trim 0.0 \\
-        --eval_dir data/test_labeled --eval_labels data/test_labels.npy
-"""
 
 from __future__ import annotations
 import argparse, os, pickle, sys, time, warnings
@@ -55,6 +17,13 @@ from models import (
     rolling_features,
 )
 from drift import build_baseline_snapshot
+try:
+    from nhits_model import (train_nhits, score_series as nhits_score_series,
+                             calibrate_channel_norm as nhits_calibrate_channel_norm,
+                             save_nhits, NHITS_AVAILABLE, NHITS_IMPORT_ERROR)
+except ImportError as e:
+    NHITS_AVAILABLE = False
+    NHITS_IMPORT_ERROR = f"{type(e).__name__}: {e}"
 
 NON_SENSOR = {"timestamp","year","month","day","hour","minute","second",
               "y","label","anomaly","is_anomaly"}
@@ -65,13 +34,6 @@ NON_SENSOR = {"timestamp","year","month","day","hour","minute","second",
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_mlflow(enabled: bool, tracking_dir: str, experiment: str):
-    """
-    Returns the mlflow module if enabled and importable, else None. Uses a
-    local SQLite backend under `tracking_dir` — no server, no account, all
-    data stays on disk. (MLflow 3.x deprecated the older plain-filesystem
-    backend in favour of a database backend; SQLite keeps this fully local
-    and zero-setup while staying on the supported path.)
-    """
     if not enabled:
         return None
     try:
@@ -124,14 +86,6 @@ def evaluate_predictions(pred: np.ndarray, labels: np.ndarray) -> dict:
 
 def smart_consensus_predictions(stat_scores, forecaster_predictions: dict,
                                 stat_k: float, min_forecaster_agree: int = 2) -> np.ndarray:
-    """
-    Same architecture validated and shipped in app.py / alert_daemon.py:
-    confirms when StatDetector is strongly elevated alone, OR weakly elevated
-    with forecaster backing, OR when >=min_forecaster_agree forecasters agree
-    regardless of StatDetector (added after a real production miss where a
-    clean spike anomaly was caught by all 3 forecasters but StatDetector,
-    tuned for different signal shapes, never fired on it).
-    """
     def smooth(sc, w=5):
         return pd.Series(sc).rolling(w, center=True, min_periods=1).median().values
     def linear_thr(sc, k):
@@ -174,18 +128,6 @@ def load_telemetry(data_dir, max_rows=None):
 
 
 def load_telemetry_kafka(bootstrap_servers: str, topic: str, max_rows: int | None):
-    """
-    Training-time equivalent of load_telemetry(), reading historical chunks
-    directly from a Kafka topic instead of a CSV folder — for setups running
-    generate_telemetry.py with --sink kafka (no CSV files ever land on disk
-    in that mode, so load_telemetry() would find nothing to train on).
-
-    Requests enough chunks to cover max_rows (300 rows/chunk), capped at a
-    sane ceiling. TelemetryConsumer.read_last_n_chunks(n) seeks back by n
-    messages from the end of the topic — if fewer than n actually exist, it
-    correctly reads everything available rather than erroring, so this
-    naturally handles "give me as much history as there is" too.
-    """
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from kafka_io import TelemetryConsumer, chunks_to_dataframe
 
@@ -242,12 +184,26 @@ def train_nn(model, X, y, epochs, bs, lr, val_frac, device, label):
     return model.cpu()
 
 
-def trim_contamination(scores_per_row, trim_frac):
-    """Return a boolean mask keeping the (1-trim_frac) lowest-scoring rows."""
+def trim_contamination(scores_per_row, trim_frac, smooth_window=15, pad=5):
+    import pandas as pd
+    n = len(scores_per_row)
     if trim_frac <= 0:
-        return np.ones(len(scores_per_row), dtype=bool)
-    cutoff = np.percentile(scores_per_row, (1 - trim_frac) * 100)
-    return scores_per_row <= cutoff
+        return np.ones(n, dtype=bool)
+
+    smoothed = pd.Series(scores_per_row).rolling(
+        smooth_window, center=True, min_periods=1).max().values
+    cutoff = np.percentile(smoothed, (1 - trim_frac) * 100)
+    flagged = smoothed > cutoff
+
+    # Pad each flagged segment slightly so we don't leave a sliver of
+    # transition rows right at a real anomaly's edge in the "clean" set.
+    keep_mask = ~flagged
+    d = np.diff(np.concatenate([[0], flagged.astype(int), [0]]))
+    starts, ends = np.where(d == 1)[0], np.where(d == -1)[0]
+    for s, e in zip(starts, ends):
+        keep_mask[max(0, s - pad): min(n, e + pad)] = False
+
+    return keep_mask
 
 
 def main():
@@ -267,7 +223,13 @@ def main():
     p.add_argument("--sensors", nargs="+", default=None)
     p.add_argument("--models", nargs="+",
                    default=["lstm","patchtst","xgboost","iforest","stat"],
-                   choices=["lstm","patchtst","xgboost","iforest","stat"])
+                   choices=["lstm","patchtst","xgboost","iforest","stat","nhits"],
+                   help="'nhits' is opt-in (not trained by default) -- it's a "
+                        "heavier third-party dependency (Darts + PyTorch "
+                        "Lightning) offering a more sophisticated forecasting "
+                        "architecture as an alternative to the from-scratch "
+                        "LSTM/PatchTST. Same role, same interface, just a "
+                        "fancier engine.")
     p.add_argument("--trim", type=float, default=0.25,
                    help="Fraction of worst-scoring training rows to drop as "
                         "likely-contaminated before final training. 0 = data is clean.")
@@ -287,6 +249,12 @@ def main():
     p.add_argument("--hidden", type=int, default=64)
     p.add_argument("--xgb_trees", type=int, default=200)
     p.add_argument("--if_trees", type=int, default=150)
+    p.add_argument("--nhits_epochs", type=int, default=25,
+                   help="NHITS trains noticeably slower than the from-scratch "
+                        "models (heavier architecture, Lightning overhead), so "
+                        "it gets its own epoch count rather than sharing --epochs.")
+    p.add_argument("--nhits_stacks", type=int, default=3)
+    p.add_argument("--nhits_width", type=int, default=128)
     p.add_argument("--force_cpu", action="store_true")
     # MLflow tracking
     p.add_argument("--mlflow", dest="use_mlflow", action="store_true", default=True,
@@ -447,6 +415,69 @@ def main():
                     if mlflow:
                         mlflow.log_metrics({f"eval_{k}": v for k,v in metrics.items()})
 
+        # ── NHITS (via Darts) — opt-in, not trained by default ──
+        if "nhits" in args.models:
+            print(f"\n{'='*50}\n[NHITS]\n{'='*50}")
+            if not NHITS_AVAILABLE:
+                print(f"  SKIPPED: darts/pytorch-lightning import failed. "
+                      f"Real error: {NHITS_IMPORT_ERROR}. If you've already run "
+                      f"`pip install darts pytorch-lightning`, this is likely a version "
+                      f"mismatch between them and your installed torch.")
+            else:
+                child_ctx = mlflow.start_run(run_name="nhits", nested=True) if mlflow else nullcontext()
+                with child_ctx:
+                    nhits_model = train_nhits(
+                        stat_clean_scaled, sensors, window=args.window,
+                        epochs=args.nhits_epochs, num_stacks=args.nhits_stacks,
+                        layer_widths=args.nhits_width,
+                    )
+                    full_stat_n = make_stationary(raw, sensors, ch_types)
+                    full_scaled_n = scaler.transform(full_stat_n).astype(np.float32)
+                    cn = nhits_calibrate_channel_norm(nhits_model, full_scaled_n, sensors, args.window)
+                    nom_scores = nhits_score_series(nhits_model, full_scaled_n, sensors,
+                                                    args.window, cn, agg=args.agg)
+                    nom_smooth = pd.Series(nom_scores).rolling(5, center=True, min_periods=1).median().values
+
+                    # Robust median+MAD-in-log-space instead of a raw
+                    # percentile -- same reasoning as XGBoost's fix above.
+                    log_sc = np.log10(np.maximum(nom_smooth, 1e-9))
+                    log_med, log_mad = float(np.median(log_sc)), float(np.median(np.abs(log_sc - np.median(log_sc))) * 1.4826)
+                    def _robust_log_thr_n(k):
+                        return float(10 ** (log_med + k * log_mad)) if log_mad > 1e-6 else float(np.percentile(nom_smooth, 99.5))
+                    thr_p99, thr_p995, thr_p999 = _robust_log_thr_n(3.0), _robust_log_thr_n(4.5), _robust_log_thr_n(7.0)
+                    print(f"  Nominal score thresholds (full-data, robust): "
+                          f"p99={thr_p99:.2f} p99.5={thr_p995:.2f} p99.9={thr_p999:.2f}")
+                    nhits_path = f"{args.model_dir}/nhits.pt"
+                    nhits_meta_path = f"{args.model_dir}/nhits_meta.pkl"
+                    save_nhits(nhits_model, nhits_path)
+                    pickle.dump({**common, "window": args.window, "channel_norm": cn,
+                                "threshold_p99": thr_p99, "threshold_p995": thr_p995,
+                                "threshold_p999": thr_p999, "model_type": "NHITS"},
+                               open(nhits_meta_path, "wb"))
+                    saved["nhits"] = 1; print("  → saved")
+
+                    if mlflow:
+                        mlflow.log_params({"epochs": args.nhits_epochs, "num_stacks": args.nhits_stacks,
+                                           "layer_widths": args.nhits_width, "window": args.window,
+                                           "calibration": "full_untrimmed_robust"})
+                        mlflow.log_metrics({"threshold_p99": thr_p99, "threshold_p995": thr_p995,
+                                            "threshold_p999": thr_p999,
+                                            "nominal_score_median": float(np.median(nom_smooth))})
+                        mlflow.log_artifact(nhits_path); mlflow.log_artifact(nhits_meta_path)
+
+                    if eval_df is not None:
+                        ds = scaler.transform(make_stationary(
+                            eval_df[sensors].values.astype(np.float32), sensors, ch_types)).astype(np.float32)
+                        sc_e = nhits_score_series(nhits_model, ds, sensors, args.window, cn, agg=args.agg)
+                        sc_e_smooth = pd.Series(sc_e).rolling(5, center=True, min_periods=1).median().values
+                        pred_e = (sc_e_smooth > thr_p995).astype(int)
+                        eval_predictions["nhits"] = pred_e
+                        metrics = evaluate_predictions(pred_e, eval_labels)
+                        print(f"  Eval: P={metrics['precision']:.3f} R={metrics['recall']:.3f} "
+                              f"F1={metrics['f1']:.3f} segments={metrics['segments_caught']}/{metrics['n_segments']}")
+                        if mlflow:
+                            mlflow.log_metrics({f"eval_{k}": v for k, v in metrics.items()})
+
         # ── PatchTST ──
         if "patchtst" in args.models:
             print(f"\n{'='*50}\n[PatchTST]\n{'='*50}")
@@ -518,16 +549,27 @@ def main():
                                          random_state=42,verbosity=0)
                     reg.fit(ftr,ttr[:,i]); mdls[s]=reg
                 preds=np.column_stack([mdls[s].predict(feats) for s in sensors])
-                cn=((preds-stat_clean_scaled)**2).mean(axis=0)
+
+                full_stat = make_stationary(raw, sensors, ch_types)
+                full_scaled = scaler.transform(full_stat).astype(np.float32)
+                full_feats = np.nan_to_num(rolling_features(full_scaled, sensors, (10, W//2, W)), nan=0.0)
+                full_preds = np.column_stack([mdls[s].predict(full_feats) for s in sensors])
+                cn=((full_preds-full_scaled)**2).mean(axis=0)
                 cn=np.maximum(cn,max(1e-8,float(np.median(cn))*1e-3))
-                normed = ((preds - stat_clean_scaled)**2) / (cn[None,:] + 1e-12)
                 agg_fn = {"max": lambda a: a.max(axis=1),
                           "top2": lambda a: np.partition(a,-2,axis=1)[:,-2:].mean(axis=1),
                           "mean": lambda a: a.mean(axis=1)}[args.agg]
-                nom_scores = agg_fn(normed)
+                full_normed = ((full_preds - full_scaled)**2) / (cn[None,:] + 1e-12)
+                nom_scores = agg_fn(full_normed)
                 nom_smooth = pd.Series(nom_scores).rolling(5, center=True, min_periods=1).median().values
-                thr_p99, thr_p995, thr_p999 = (float(np.percentile(nom_smooth, p)) for p in (99, 99.5, 99.9))
-                print(f"  Nominal score thresholds: p99={thr_p99:.2f} p99.5={thr_p995:.2f} p99.9={thr_p999:.2f}")
+
+                log_sc = np.log10(np.maximum(nom_smooth, 1e-9))
+                log_med, log_mad = float(np.median(log_sc)), float(np.median(np.abs(log_sc - np.median(log_sc))) * 1.4826)
+                def _robust_log_thr(k):
+                    return float(10 ** (log_med + k * log_mad)) if log_mad > 1e-6 else float(np.percentile(nom_smooth, 99.5))
+                thr_p99, thr_p995, thr_p999 = _robust_log_thr(3.0), _robust_log_thr(4.5), _robust_log_thr(7.0)
+                print(f"  Nominal score thresholds (full-data, robust): "
+                      f"p99={thr_p99:.2f} p99.5={thr_p995:.2f} p99.9={thr_p999:.2f}")
                 xgb_path = f"{args.model_dir}/xgboost.pkl"
                 pickle.dump({**common,"window":W,"channel_norm":cn,"feat_windows":(10,W//2,W),
                              "models":mdls,
@@ -593,37 +635,8 @@ def main():
             child_ctx = mlflow.start_run(run_name="stat", nested=True) if mlflow else nullcontext()
             with child_ctx:
                 sd = StatDetector(window=args.stat_window)
-                # Calibrate on the FULL, UNTRIMMED data, not raw_clean.
-                # StatDetector already uses robust statistics (median-based
-                # baselines, tolerant of a contamination minority) specifically
-                # so it doesn't need forecaster-style trimming -- and that
-                # trimming actively HURTS it for sparse/rare-event channels.
-                # The trim scout is itself a forecaster, and a forecaster
-                # can't distinguish "genuinely rare but normal event" from
-                # "anomaly" -- both look equally surprising to a next-step
-                # predictor trained mostly on the dominant value. Verified on
-                # this exact pipeline: for a binary channel active ~5% of the
-                # time by design, the scout flagged and removed EVERY SINGLE
-                # occurrence of the rare-but-normal activation, leaving a
-                # kept set where the channel is "always 0" -- collapsing its
-                # calibrated rate_std to the numerical floor. Any ordinary
-                # live activation then divided by that near-zero denominator
-                # produced scores in the millions across most of the dataset.
                 sd.fit(raw, sensors, ch_types=ch_types)
                 print(f"  Calibrated per-channel baselines: {sd.ch_types}")
-
-                # Calibrate LINEAR thresholds on nominal (clean) data, same
-                # principle already applied to the forecasters: a threshold
-                # computed live from median+k*MAD on whatever window is
-                # currently loaded is unstable — if the "elevated" state
-                # occupies anywhere close to half the window (a busy live
-                # snapshot, or a window that itself contains an ongoing
-                # anomaly), the median and MAD both get pulled up into the
-                # contaminated regime and the threshold can end up ABOVE
-                # every observed score, silently producing zero detections.
-                # A threshold fit once on clean nominal data — where the
-                # elevated state genuinely is a small minority — doesn't
-                # have this failure mode.
                 nom_scores = sd.score(raw)
                 nom_med = float(np.median(nom_scores))
                 nom_mad = float(np.median(np.abs(nom_scores - nom_med)) * 1.4826)
@@ -655,11 +668,6 @@ def main():
                     sc_e = sd.score(eval_df[sensors].values.astype(np.float32))
                     eval_stat_scores = sc_e
                     sc_e_smooth = pd.Series(sc_e).rolling(5, center=True, min_periods=1).median().values
-                    # Use the same nominal-calibrated threshold saved for
-                    # production use, not a live one computed on the eval
-                    # set itself — the eval set is ~5% anomalous, well under
-                    # the failure threshold, but staying consistent with
-                    # what app.py/alert_daemon.py will actually use.
                     pred_e = (sc_e_smooth > thr_p995).astype(int)
                     eval_predictions["stat"] = pred_e
                     metrics = evaluate_predictions(pred_e, eval_labels)
@@ -669,9 +677,6 @@ def main():
                         mlflow.log_metrics({f"eval_{k}": v for k,v in metrics.items()})
 
         # ── Smart Consensus evaluation (parent run) ──
-        # The combination that ships in app.py / alert_daemon.py — evaluated
-        # here so you can see, in the same MLflow run, whether this training
-        # run's models combine into a better detector than any one alone.
         if eval_df is not None and eval_predictions:
             forecaster_preds = {k: v for k, v in eval_predictions.items() if k != "stat"}
             consensus_pred = smart_consensus_predictions(

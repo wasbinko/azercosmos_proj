@@ -1,5 +1,3 @@
-
-
 import os
 import sys
 import time
@@ -46,7 +44,7 @@ KAFKA_GROUP_ID  = "alert-daemon"   # persistent consumer group — offsets survi
 
 # Email settings
 EMAIL_SENDER   = "wasbfifa228@gmail.com"
-EMAIL_PASSWORD = "XXXXXXXXXXXXXXXX"     # use an App Password, never a real password
+EMAIL_PASSWORD = "wgvw fgxm admt qaqy"     # use an App Password, never a real password
 EMAIL_RECEIVER = "mammadovn228@gmail.com"
 
 # Models to run
@@ -55,7 +53,7 @@ MODELS_TO_USE = ["stat", "lstm", "patchtst", "xgboost"]
 # Detection settings
 THRESHOLD_METHOD   = "mad"   # log-space median + k*MAD for forecaster/tree models
 THRESHOLD_K        = 4.0     # higher = stricter = fewer false alarms (forecasters)
-STAT_K             = 6.0     # base k for StatDetector's linear z-score threshold
+STAT_K             = 4.0     # base k for StatDetector's linear z-score threshold
 SCORE_SMOOTHING_S  = 5       # rolling-median smoothing window (seconds)
 MIN_DURATION_S     = 10      # discard flagged runs shorter than this
 
@@ -64,7 +62,7 @@ BUFFER_CHUNKS = 10
 
 # Cooldown: once an alert fires, don't fire again for this many seconds even
 # if the same ongoing anomaly is still being flagged in subsequent chunks.
-ALERT_COOLDOWN_SECONDS = 0  # 10 minutes
+ALERT_COOLDOWN_SECONDS = 0   # had this for anyone that might need to use this.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -90,14 +88,7 @@ def linear_threshold(sc: np.ndarray, k: float) -> float:
 
 
 def log_threshold(sc: np.ndarray, method: str, k: float) -> float:
-    """
-    Threshold in log-space, robust to degenerate distributions where many
-    scores are exactly (or near) zero — common for IsolationForest, whose
-    decision_function clips to 0 for the bulk of normal points. In that case
-    median and MAD both collapse toward log10(eps), making any k produce an
-    unstable near-zero threshold. We detect this and fall back to a high
-    percentile of the NONZERO scores instead.
-    """
+
     nonzero = sc[sc > 1e-6]
     if len(nonzero) < max(10, int(0.05 * len(sc))):
         return float(np.percentile(sc, 99.5))
@@ -136,7 +127,8 @@ def regions(pred: np.ndarray):
 
 def smart_consensus(predictions: dict, scores: dict, stat_thresholds: tuple,
                     min_forecaster_agree: int = 2) -> np.ndarray:
-    fc_names = [n for n in ("lstm", "patchtst", "xgboost") if n in predictions]
+
+    fc_names = [n for n in ("lstm", "patchtst", "nhits", "xgboost") if n in predictions]
     fc_vote = sum(predictions[n] for n in fc_names) if fc_names else None
     fc_strong_agree = (fc_vote >= min_forecaster_agree).astype(int) if fc_vote is not None else None
 
@@ -262,15 +254,9 @@ def main():
 
                 chunk_buffer.append(df_new)
 
-                # Need a reasonable amount of context before scoring meaningfully.
-                # A single chunk (300 rows) is too small for a stable smoothed
-                # threshold comparison — verified in testing: with only one
-                # chunk of context, normal forecaster noise can sit right at
-                # the saved threshold and tip over by chance. Three chunks
-                # (900 rows, ~15 min) gives the rolling median smoothing and
-                # the saved nominal threshold enough room to behave normally.
+               #also maybe useful, if needed change to 900 or more.
                 buffered_df = pd.concat(list(chunk_buffer), ignore_index=True)
-                if len(buffered_df) < 900:
+                if len(buffered_df) < 300:
                     print(f"   Building context buffer ({len(buffered_df)} rows so far)... skipping scoring.")
                     continue
 
@@ -282,14 +268,6 @@ def main():
                 # Score the buffered context
                 raw_scores = score_all(active_bundles, data_arr, sensors, device=device)
                 raw_scores.pop("ensemble", None)
-
-                # Model-aware thresholding: StatDetector uses a linear z-score
-                # threshold, forecasters/trees use log-space (their scores span
-                # orders of magnitude). Thresholds are computed on the FULL
-                # buffer (stable baseline), never on the tail slice alone —
-                # a threshold computed only on the newest (possibly anomalous)
-                # chunk would shift to match it and hide the very anomaly it's
-                # supposed to catch.
                 predictions = {}
                 smoothed = {}
                 model_counts = {}
@@ -297,23 +275,11 @@ def main():
                 for name, sc in raw_scores.items():
                     sc_smooth = smooth_scores(sc, SCORE_SMOOTHING_S)
                     if name in LINEAR_SCORE_MODELS:
-                        # Use the STABLE nominal median/MAD saved at training
-                        # time (fixes the original bug: a live median/MAD
-                        # computed on the current scoring buffer collapses
-                        # when the elevated state occupies anywhere close to
-                        # half the buffer — verified: at ~54-65% elevated,
-                        # the threshold exceeded the max observed score, so
-                        # nothing was ever flagged), but still derive the
-                        # actual threshold via STAT_K so it responds to that
-                        # constant the way the rest of this file expects
-                        # (fixes a regression where hardcoding fixed
-                        # precomputed values could sit far too low or high
-                        # for a given deployment's real data scale).
+
                         saved_stat = active_bundles.get(name, {})
-                        if "nominal_median" in saved_stat and "nominal_mad" in saved_stat and saved_stat["nominal_mad"] > 1e-6:
-                            nm, nmad = saved_stat["nominal_median"], saved_stat["nominal_mad"]
-                            thr = nm + STAT_K * nmad
-                            stat_thresholds = (nm + (STAT_K * 1.5) * nmad, nm + max(1.0, STAT_K * 0.6) * nmad)
+                        if "threshold_strong" in saved_stat and "threshold_weak" in saved_stat:
+                            thr = saved_stat.get("threshold_p995", saved_stat["threshold_weak"])
+                            stat_thresholds = (saved_stat["threshold_strong"], saved_stat["threshold_weak"])
                         else:
                             thr = linear_threshold(sc_smooth, STAT_K)
                             stat_thresholds = (
@@ -323,12 +289,7 @@ def main():
                             print(f"   ⚠️ {name}: no saved nominal threshold found, using live "
                                   f"median+MAD (retrain with current train.py to fix)")
                     else:
-                        # Prefer the threshold calibrated on clean nominal data
-                        # at training time — robust to rare single-point
-                        # forecast noise spikes that inflate a live log-MAD
-                        # threshold. Falls back to live computation with a
-                        # warning if the model wasn't trained with this saved
-                        # calibration (retrain to fix).
+ 
                         saved_bundle = active_bundles.get(name, {})
                         saved_thr = saved_bundle.get("threshold_p995")
                         if saved_thr is not None:
@@ -337,7 +298,12 @@ def main():
                             thr = log_threshold(sc_smooth, THRESHOLD_METHOD, THRESHOLD_K)
                             print(f"   ⚠️ {name}: no saved nominal threshold found, using live "
                                   f"log-MAD (retrain with current train.py to fix)")
-                    pred = apply_min_duration((sc_smooth > thr).astype(int), MIN_DURATION_S)
+                    pred = (sc_smooth > thr).astype(int)
+
+                    win = active_bundles.get(name, {}).get("window")
+                    if win:
+                        pred[:min(win, len(pred))] = 0
+                    pred = apply_min_duration(pred, MIN_DURATION_S)
                     predictions[name] = pred
                     smoothed[name]    = sc_smooth
                     model_counts[name] = int(pred.sum())

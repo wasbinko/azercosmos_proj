@@ -30,9 +30,9 @@ services:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
-      interval: 10s
+      interval: 1h
       timeout: 10s
-      retries: 10
+      retries: 3
       start_period: 30s
 
 volumes:

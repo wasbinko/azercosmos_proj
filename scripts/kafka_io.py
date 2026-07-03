@@ -47,11 +47,6 @@ def message_to_chunk(msg: dict) -> pd.DataFrame:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TelemetryProducer:
-    """
-    Thin wrapper around kafka-python's KafkaProducer for sending chunk
-    DataFrames. Used by generate_telemetry.py in --sink kafka / --sink both
-    modes.
-    """
     def __init__(self, bootstrap_servers: str = DEFAULT_BOOTSTRAP,
                  topic: str = DEFAULT_TOPIC):
         from kafka import KafkaProducer
@@ -86,19 +81,6 @@ class TelemetryProducer:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TelemetryConsumer:
-    """
-    Thin wrapper around kafka-python's KafkaConsumer for reading chunk
-    DataFrames. Used by both alert_daemon.py (continuous polling with a
-    persistent consumer group) and app.py (one-shot "fetch last N chunks").
-
-    IMPORTANT: kafka-python enforces that a single consumer instance uses
-    EXACTLY ONE of subscribe() or assign() — never both. This class supports
-    both usage patterns, so it deliberately does NOT subscribe in __init__.
-    Call poll_new_chunks() for the persistent-subscription path (daemon), or
-    read_last_n_chunks() for the manual-assignment path (app one-shot read) —
-    calling both on the same instance will raise the same IllegalStateError
-    this class exists to avoid.
-    """
     def __init__(self, bootstrap_servers: str = DEFAULT_BOOTSTRAP,
                  topic: str = DEFAULT_TOPIC, group_id: Optional[str] = None,
                  auto_offset_reset: str = "latest",
@@ -117,15 +99,6 @@ class TelemetryConsumer:
         )
 
     def poll_new_chunks(self, max_records: int = 100) -> list[tuple[str, pd.DataFrame]]:
-        """
-        Non-blocking-ish poll for new messages since the last call (relies on
-        the consumer group's committed offset — this is what replaces
-        `processed_files`). Returns [(chunk_timestamp, df), ...] in order.
-        Used by the daemon's main loop, called once per iteration.
-
-        Subscribes to the topic on first call (lazily, so a TelemetryConsumer
-        built for one-shot reads never triggers this path).
-        """
         if not self._subscribed:
             self.consumer.subscribe([self.topic])
             self._subscribed = True
@@ -137,15 +110,6 @@ class TelemetryConsumer:
         return results
 
     def read_last_n_chunks(self, n: int) -> list[tuple[str, pd.DataFrame]]:
-        """
-        One-shot read of the most recent N chunks from the topic, ignoring
-        consumer-group offsets entirely (seeks to the end and reads
-        backwards). Used by the Streamlit app's Configure & Run tab, which
-        wants "give me a fresh snapshot", not a persistent stream position.
-
-        Uses manual partition assignment (assign()), which is why this
-        consumer must never also call subscribe() — see class docstring.
-        """
         if self._subscribed:
             raise RuntimeError(
                 "This TelemetryConsumer already called poll_new_chunks() (which "
@@ -188,31 +152,7 @@ class TelemetryConsumer:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def chunks_to_dataframe(chunks: list[tuple[str, pd.DataFrame]]) -> Optional[pd.DataFrame]:
-    """
-    Assemble consumed chunks into one DataFrame, ordered by CHUNK send-time
-    (the Kafka message key, i.e. when the producer actually sent it) —
-    deliberately NOT by re-sorting the concatenated rows on the data's own
-    embedded "timestamp" column.
 
-    Why this matters: within a single chunk, the 300 rows are always
-    correctly ordered (one atomic call to generate_telemetry_chunk). But if
-    the producer was ever stopped and restarted (very common during
-    testing/development), the new session's embedded timestamps can overlap
-    in wall-clock time with an older session still sitting in the topic —
-    sorting the FULL concatenated dataframe by that embedded column then
-    interleaves rows from two unrelated recording sessions together.
-    Verified: two 25-minute sessions overlapping by 15 minutes produced 1401
-    session switches across 3000 sorted rows — not a small gap, a fully
-    scrambled dataset. This silently corrupts rolling-window features (used
-    heavily by XGBoost) far more than it affects models that don't depend on
-    true time-contiguity between consecutive rows.
-
-    Ordering by chunk key instead sidesteps the problem entirely: each
-    chunk's internal row order is trustworthy on its own, so only the
-    chunk-to-chunk order needs a reliable signal, and the producer's actual
-    send order (the message key) is that signal — unlike the data's
-    embedded timestamp, it can't retroactively overlap with a past session.
-    """
     if not chunks:
         return None
     chunks_sorted = sorted(chunks, key=lambda c: c[0])   # sort by chunk_timestamp key

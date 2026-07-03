@@ -1,5 +1,4 @@
 
-
 from __future__ import annotations
 import os, pickle, sys, warnings
 warnings.filterwarnings("ignore")
@@ -12,6 +11,12 @@ from models import (
     make_stationary, make_forecast_windows, nn_forecast_errors,
     errors_to_timestep, rolling_features,
 )
+try:
+    from nhits_model import (load_nhits, score_series as nhits_score_series,
+                             NHITS_AVAILABLE, NHITS_IMPORT_ERROR)
+except ImportError as e:
+    NHITS_AVAILABLE = False
+    NHITS_IMPORT_ERROR = f"{type(e).__name__}: {e}"
 
 
 def _load_nn(model_dir, name, ctor):
@@ -47,6 +52,26 @@ def load_all(model_dir):
                 bundles[name] = pickle.load(open(path, "rb")); print(f"[LOAD] {name:10} ✓")
             except Exception as e:
                 print(f"[LOAD] {name:10} ✗ ({e})")
+    # NHITS is opt-in (heavier third-party dependency) — only attempt if both
+    # the model files exist AND darts/pytorch-lightning are installed on this
+    # machine. Missing either is not an error, just "not available here".
+    nhits_pt   = f"{model_dir}/nhits.pt"
+    nhits_meta = f"{model_dir}/nhits_meta.pkl"
+    if os.path.exists(nhits_pt) and os.path.exists(nhits_meta):
+        if not NHITS_AVAILABLE:
+            print(f"[LOAD] {'nhits':10} ✗ (model file found, but the darts/pytorch-lightning "
+                  f"import failed. Real error: {NHITS_IMPORT_ERROR}. If you've already run "
+                  f"`pip install darts pytorch-lightning`, this is likely a version mismatch "
+                  f"between them and your installed torch — check the error above for the "
+                  f"specific package/class it names.)")
+        else:
+            try:
+                b = pickle.load(open(nhits_meta, "rb"))
+                b["model"] = load_nhits(nhits_pt)
+                bundles["nhits"] = b
+                print(f"[LOAD] {'nhits':10} ✓")
+            except Exception as e:
+                print(f"[LOAD] {'nhits':10} ✗ ({e})")
     return bundles
 
 
@@ -87,6 +112,14 @@ def score_stat(bundle, raw):
     return bundle["detector"].score(raw)   # StatDetector works on RAW data
 
 
+def score_nhits(bundle, raw):
+    stat = _stationary(bundle, raw)
+    ds = bundle["scaler"].transform(stat).astype(np.float32)
+    return nhits_score_series(bundle["model"], ds, bundle["sensors"],
+                              bundle["window"], bundle["channel_norm"],
+                              agg=bundle.get("agg", "max"))
+
+
 def score_all(bundles, raw, sensors, device="cpu", weights=None):
     scores = {}
     for name, b in bundles.items():
@@ -95,6 +128,7 @@ def score_all(bundles, raw, sensors, device="cpu", weights=None):
             elif name == "xgboost":         s = score_xgboost(b, raw)
             elif name == "iforest":         s = score_iforest(b, raw)
             elif name == "stat":            s = score_stat(b, raw)
+            elif name == "nhits":           s = score_nhits(b, raw)
             else: continue
             scores[name] = np.nan_to_num(s, nan=0.0, posinf=1e9, neginf=0.0)
         except Exception as e:
@@ -107,7 +141,6 @@ def score_all(bundles, raw, sensors, device="cpu", weights=None):
 
 
 def derive_threshold(scores, method="mad", k=6.0, pct=99.5, linear=False):
-    
     s = scores[~np.isnan(scores)]
     if len(s) == 0:
         return 1.0

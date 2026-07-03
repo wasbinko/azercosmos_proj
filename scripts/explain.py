@@ -1,32 +1,3 @@
-"""
-SHAP explainability for the XGBoost detector.
-================================================
-Answers "why did the model flag this specific moment?" for any timestep,
-using SHAP's TreeExplainer — a fast, exact attribution method purpose-built
-for tree ensembles like XGBoost (no approximation needed, unlike LIME).
-
-Why XGBoost specifically
---------------------------
-Of the five detectors in this project, XGBoost is the natural fit for SHAP:
-TreeExplainer computes EXACT feature attributions for tree models in
-milliseconds. The forecasters (LSTM/PatchTST) would need a slower,
-approximate explainer (DeepExplainer/GradientExplainer) for meaningfully
-noisier results, and StatDetector's logic is already fully transparent by
-construction (each channel's z-score IS its own explanation — there's
-nothing hidden to attribute).
-
-What "explaining" means here
--------------------------------
-XGBoost doesn't predict "anomalous" directly — it predicts what each
-channel's NEXT value should be, and the anomaly score comes from how wrong
-that prediction was. So "explaining an anomaly" means: explaining the
-regressor's PREDICTION for the channel that drove the highest anomaly
-score at that moment. SHAP tells you which input features (e.g. "bfo2's
-rolling standard deviation over the last 30 seconds") pushed that
-prediction up or down the most. A large gap between what was predicted and
-what actually happened, for a feature-driven reason you can name, is a much
-more concrete story than a bare anomaly score.
-"""
 
 from __future__ import annotations
 import numpy as np
@@ -37,11 +8,6 @@ from models import make_stationary, rolling_features
 
 def rolling_feature_names(sensors: list[str], ch_types: dict,
                           windows: tuple = (10, 30, 60)) -> list[str]:
-    """
-    Human-readable names matching rolling_features()'s exact column order.
-    Must stay in lockstep with that function — see its docstring for the
-    per-channel, per-window block layout this mirrors.
-    """
     names = []
     for col in sensors:
         is_binary = ch_types.get(col) == "binary"
@@ -56,32 +22,6 @@ def rolling_feature_names(sensors: list[str], ch_types: dict,
 
 def explain_forecaster_row(bundle: dict, raw_data: np.ndarray, row_idx: int,
                            top_k: int = 8) -> dict:
-    """
-    Explain why row `row_idx` scored the way it did under an LSTM or
-    PatchTST bundle, using Captum's Integrated Gradients.
-
-    Unlike XGBoost's flat feature vector, a forecaster's input is a whole
-    WINDOW of the past (window_seconds x n_channels) — so "explaining" a
-    prediction means attributing importance across BOTH time and channel at
-    once. Integrated Gradients handles this the same way it handles any
-    input shape: it walks from a neutral baseline (here, all-zeros in the
-    scaled/stationary space, which represents "no signal / typical value"
-    since RobustScaler centers on the median) up to the real input, and
-    accumulates how much each individual (timestep, channel) position
-    pushed the model's prediction for the worst-scoring channel.
-
-    Returns:
-        {
-          "channel": str, "predicted": float, "actual": float, "error": float,
-          "attribution": np.ndarray,   # shape (window, n_channels), signed
-          "sensors": list[str],        # column labels for the attribution grid
-          "window": int,               # row labels count (most recent = last row)
-          "convergence_delta": float,  # Captum's own approximation-quality check;
-                                        # should be small relative to the prediction
-                                        # magnitude — large values mean don't trust
-                                        # this particular attribution closely.
-        }
-    """
     import torch
     from captum.attr import IntegratedGradients
 
@@ -150,12 +90,6 @@ def explain_forecaster_row(bundle: dict, raw_data: np.ndarray, row_idx: int,
 
 
 def top_attribution_cells(result: dict, top_k: int = 8) -> list[tuple[str, int, float]]:
-    """
-    Flatten a Captum attribution grid down to the top_k individual
-    (channel, seconds-ago) cells by absolute impact — the time-series
-    equivalent of SHAP's top_features list, for a compact summary alongside
-    the full heatmap.
-    """
     attr = result["attribution"]          # (window, C)
     sensors = result["sensors"]
     window = result["window"]
@@ -169,12 +103,6 @@ def top_attribution_cells(result: dict, top_k: int = 8) -> list[tuple[str, int, 
 
 
 def humanize_feature_name(name: str) -> str:
-    """
-    Turn a raw feature column name like "bfo2_std_30s" into a plain-English
-    fragment like "how much bfo2 was jumping around in the last 30 seconds".
-    Used to make SHAP/Captum output readable to someone who doesn't know
-    what a rolling standard deviation is.
-    """
     parts = name.rsplit("_", 2)   # [channel, stat, "30s"]
     if len(parts) != 3:
         return name
@@ -200,12 +128,6 @@ def plain_summary(result: dict) -> str:
 
 
 def plain_feature_reasons(top_features: list[tuple[str, float]], max_items: int = 3) -> list[dict]:
-    """
-    Convert SHAP's top_features list into plain-language reason cards:
-    [{"text": "...", "direction": "up"/"down", "strength": float 0-1}, ...]
-    strength is normalised against the strongest item so the UI can size/
-    color things consistently regardless of the raw SHAP value's scale.
-    """
     items = top_features[:max_items]
     if not items:
         return []
@@ -240,24 +162,6 @@ def plain_attribution_reasons(top_cells: list[tuple[str, int, float]], max_items
 
 def explain_xgboost_row(bundle: dict, raw_data: np.ndarray, row_idx: int,
                         top_k: int = 6) -> dict:
-    """
-    Explain why row `row_idx` scored the way it did under the XGBoost bundle.
-
-    Returns:
-        {
-          "channel": str,            # which channel drove the highest score
-          "predicted": float,        # what XGBoost expected for that channel
-          "actual": float,           # what actually happened (stationary/scaled space)
-          "error": float,            # squared error driving the anomaly score
-          "top_features": [(name, shap_value), ...],  # sorted by |impact|
-          "base_value": float,       # the model's average/baseline prediction
-        }
-
-    top_features' shap_value is signed: positive means that feature pushed
-    the prediction UP, negative means it pushed it DOWN. The magnitude is
-    how much it mattered, in the same units as the (scaled, stationary)
-    prediction itself.
-    """
     import shap
 
     required = ("sensors", "scaler", "models", "channel_norm")
