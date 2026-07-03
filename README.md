@@ -8,7 +8,6 @@ An end-to-end Machine Learning and monitoring pipeline for processing, modeling,
 - [Core Components](#core-components)
 - [Prerequisites](#prerequisites)
 - [Getting Started](#getting-started)
-- [Monitoring and Diagnostics](#monitoring-and-diagnostics)
 
 ---
 
@@ -23,7 +22,7 @@ azercosmos_proj/
 ├── generate_telemetry.py    # Script to simulate or ingest raw telemetry data with anomalies
 ├── requirements.txt         # Python dependencies
 └── scripts/                 # ML and Data processing scripts
-    ├── check_drift.py       # Detects data drift in telemetry against training baseline
+    ├── check_drift.py       # Detects data drift in telemetry against training baseline (not exactly needed)
     ├── diagnose_stat.py     # Statistical diagnostics for the StatDetector
     ├── drift.py             # Core Population Stability Index (PSI) drift calculation logic
     ├── explain.py           # Model explainability (SHAP & Captum) for XGBoost/Forecasters
@@ -120,7 +119,7 @@ Wait for a few chunks of data to be generated, then train the anomaly detection 
 
 ```bash
 # Train on the generated Kafka stream and trim 25% of anomalous data out during training
-python scripts/train.py --source kafka --trim 0.25
+python scripts/train.py --source kafka --kafka_topic telemetry.raw --model_dir models --trim 0.25 --models stat lstm patchtst xgboost iforest nhits
 
 ```
 
@@ -157,13 +156,3 @@ Checks if the current telemetry data has statistically drifted (using Population
 
 ```bash
 python scripts/check_drift.py --source kafka
-
-```
-
-**StatDetector Diagnostics:**
-Inspects the calibrated baselines (variance, rates, slopes) learned by the statistical detector.
-
-```bash
-python scripts/diagnose_stat.py --data_dir live_telemetry_stream
-
-```
