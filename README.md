@@ -1,4 +1,4 @@
-# Azercosmos Telemetry ML Pipeline
+# Internship Telemetry ML Pipeline
 
 An end-to-end Machine Learning and monitoring pipeline for processing, modeling, and alerting on telemetry data. This application utilizes Docker for containerization (Kafka), MLflow for model tracking, Streamlit for an interactive dashboard, and a dedicated Python daemon for proactive email alerts.
 
@@ -14,15 +14,15 @@ An end-to-end Machine Learning and monitoring pipeline for processing, modeling,
 ## Project Structure
 
 ```text
-azercosmos_proj/
+Internship_proj/
 ├── alert_daemon.py          # Background service for triggering email alerts
 ├── app/
 │   └── app.py               # Streamlit application for real-time dashboard and deep dives
-├── docker-compose.yml       # Docker orchestration for Kafka (KRaft mode)
+├── docker-compose.yml       # Docker orchestration for Kafka
 ├── generate_telemetry.py    # Script to simulate or ingest raw telemetry data with anomalies
 ├── requirements.txt         # Python dependencies
 └── scripts/                 # ML and data processing scripts
-    ├── check_drift.py       # Standalone data drift check (PSI) against the training baseline
+    ├── check_drift.py       # Standalone data drift check against the training baseline
     ├── diagnose_stat.py     # Statistical diagnostics for the StatDetector
     ├── drift.py             # Core Population Stability Index (PSI) drift calculation logic
     ├── explain.py           # Model explainability (SHAP for XGBoost, Captum for forecasters)
@@ -115,7 +115,7 @@ python scripts/train.py --source kafka --kafka_topic telemetry.raw --model_dir m
 
 ```
 
-*To view MLflow training runs, run: `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db`*
+*To view MLflow training runs, run: `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db` and open `localhost:5000`*
 
 ### Step 4: Run the Dashboard
 
