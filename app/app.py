@@ -600,7 +600,7 @@ with tab_cfg:
                 have_min = max(0, data_elapsed / 60)
                 st.info(f"Auto-run is ON, synced to incoming data - last run used data through "
                        f"{last_seen_data_ts:%H:%M:%S}. Next run once {auto_run_minutes} minutes "
-                       f"of new data has arrived ({have_min:.1f} so far), {file_note}.")
+                       f"of new data has arrived, {file_note}.")
 
     if run_clicked or auto_run_triggered:
         if auto_run_triggered:
@@ -1335,14 +1335,11 @@ with tab_compare:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 - Info
-# ═══════════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════════
 # TAB - Data Health (drift monitoring)
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_health:
-    from drift import (check_drift, overall_drift_status,
-                       PSI_STABLE_THRESHOLD, PSI_MODERATE_THRESHOLD)
+    from drift import (check_drift, overall_drift_status, _drift_comparable_values,
+                   PSI_STABLE_THRESHOLD, PSI_MODERATE_THRESHOLD)
 
     st.subheader("Has \"normal\" quietly changed?")
     
@@ -1411,6 +1408,8 @@ with tab_health:
                         "reports": reports, "status": status,
                         "n_rows": len(health_df), "n_chunks": health_n,
                         "source": health_source,
+                        "df": health_df, "sensors": sensors_h,
+                        "ch_types": baseline.get("ch_types", {}),
                     }
 
     dr = st.session_state.get("drift_results")

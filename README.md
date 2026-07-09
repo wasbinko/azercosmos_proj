@@ -1,6 +1,6 @@
 # Internship Telemetry ML Pipeline
 
-An end-to-end Machine Learning and monitoring pipeline for processing, modeling, and alerting on telemetry data. This application utilizes Docker for containerization (Kafka), MLflow for model tracking, Streamlit for an interactive dashboard, and a dedicated Python daemon for proactive email alerts. Desktop GUI wrappers are also available for training and running the alert daemon without needing a terminal.
+An end-to-end Machine Learning and monitoring pipeline for processing, modeling, and alerting on telemetry data. This application utilizes Docker for containerization (Kafka), MLflow for model tracking, Streamlit for an interactive dashboard, and a dedicated Python daemon for proactive email alerts. Desktop GUI wrappers are the recommended way to train and run the alert daemon without needing a terminal.
 
 ## Table of Contents
 - [Project Structure](#project-structure)
@@ -31,7 +31,7 @@ Internship_proj/
     ├── infer.py                # Runs model inference and scoring on incoming data
     ├── kafka_io.py              # Handles Kafka producers/consumers for data streams
     ├── models.py                 # ML model definitions (LSTM, PatchTST, XGBoost, IF, StatDetector)
-    ├── nhits_model.py             # NHITS forecasting model (via Darts) — optional detector
+    ├── nhits_model.py             # NHITS forecasting model (via Darts) - optional detector
     └── train.py                    # Model training, MLflow logging, and drift baseline snapshotting
 
 ```
@@ -46,11 +46,9 @@ This script acts as the entry point for your data stream. It generates simulated
 
 ### 2. Machine Learning & MLflow (`scripts/train.py`)
 
-Trains up to seven detectors — StatDetector, LSTM, PatchTST, XGBoost, Isolation Forest, and two optional forecasters via the Darts library, NHITS and TiDE — with contamination-robust training. It leverages **MLflow** using a local SQLite backend (`mlruns/mlflow.db`) to track experiments, log metrics, and manage model versions: every training run is recorded automatically, with zero manual note-taking, so any regression has an exact record to compare against and revert to. Training data can be pulled from local CSV files or read directly from a Kafka topic (`--source csv|kafka`), and every run automatically snapshots a drift baseline used later by the drift-monitoring tools.
+Trains up to seven detectors - StatDetector, LSTM, PatchTST, XGBoost, Isolation Forest, and two optional forecasters via the Darts library, NHITS - with contamination-robust training. It leverages **MLflow** using a local SQLite backend (`mlruns/mlflow.db`) to track experiments, log metrics, and manage model versions: every training run is recorded automatically, with zero manual note-taking, so any regression has an exact record to compare against and revert to. Training data can be pulled from local CSV files or read directly from a Kafka topic (`--source csv|kafka`), and every run automatically snapshots a drift baseline used later by the drift-monitoring tools.
 
-TiDE is the lighter-weight of the two optional Darts forecasters — a simpler, MLP-based architecture that trains noticeably faster than NHITS with comparable accuracy, useful if training speed matters more than squeezing out the last bit of accuracy.
-
-Prefer not to use the terminal for this? See **`train_gui.py`** below.
+The recommended way to run this is **`train_gui.py`** (see below) - the terminal command still works exactly the same underneath if you prefer it.
 
 ### 3. Interactive Web Dashboard (`app/app.py`)
 
@@ -59,27 +57,27 @@ A comprehensive Streamlit interface that provides:
 * Real-time scoring and detection overlays across all trained models, with a Smart Consensus "Confirmed" signal and a transparent breakdown of exactly why any given detection fired.
 * A "Deep Dive" tab for investigating specific sensor anomalies.
 * A "Model Comparison" tab for side-by-side score comparison across models.
-* Explainability integration — SHAP for XGBoost, Captum for the forecasters (LSTM, PatchTST, NHITS, TiDE) — with plain-language explanations of why a specific moment was flagged.
+* Explainability integration - SHAP for XGBoost, Captum for the forecasters (LSTM, PatchTST, NHITS) - with plain-language explanations of why a specific moment was flagged.
 * A "Data Health" tab for drift monitoring (Population Stability Index) against the training baseline. See `simulate_drift.py` below for a quick way to demo this tab reacting to real drift.
-* Optional scheduled auto-run, synced to the data's own timestamps rather than wall-clock time — a run fires once genuinely new data has arrived, not on a fixed clock offset from whenever auto-run happened to be enabled.
+* Optional scheduled auto-run, synced to the data's own timestamps rather than wall-clock time - a run fires once genuinely new data has arrived, not on a fixed clock offset from whenever auto-run happened to be enabled.
 * Supports both local CSV files and a live Kafka topic as the data source.
 
 ### 4. Email Alerting Daemon (`alert_daemon.py`)
 
 A persistent background script that monitors the data stream (CSV or Kafka, via `--source csv|kafka`). It uses a "Smart Consensus" mechanism (combining StatDetector and the available forecasters) to prevent false positives. If a confirmed anomaly occurs, it dispatches an email alert to configured stakeholders.
 
-Data folder, model folder, and email sender/receiver are configured as constants inside the script itself — see the note under Prerequisites below.
+Data folder, model folder, and email sender/receiver are configured as constants inside the script itself - see the note under Prerequisites below.
 
-Prefer not to use the terminal for this? See **`daemon_gui.py`** below.
+The recommended way to run this is **`daemon_gui.py`** (see below) - the terminal command still works exactly the same underneath if you prefer it.
 
 ### 5. Desktop GUI Utilities (`train_gui.py`, `daemon_gui.py`)
 
-Two small Tkinter desktop windows that wrap the terminal workflows above, useful for demos or day-to-day convenience without needing to type commands:
+Two small Tkinter desktop windows that wrap the terminal workflows above - the recommended way to train models and run the alert daemon, whether for a demo or day-to-day convenience:
 
-* **`train_gui.py`** — checkboxes for which models to train, a data source picker, and a Train Models button. Streams the real `train.py` output live into the window, including the MLflow confirmation lines, and shows a completion popup once done.
-* **`daemon_gui.py`** — Start/Stop buttons for the alert daemon, with the same live log streaming. Closing the window while the daemon is still running prompts for confirmation first, so it doesn't get left running invisibly in the background.
+* **`train_gui.py`** - checkboxes for which models to train, a data source picker, and a Train Models button. Streams the real `train.py` output live into the window, including the MLflow confirmation lines, and shows a completion popup once done.
+* **`daemon_gui.py`** - Start/Stop buttons for the alert daemon, with the same live log streaming. Closing the window while the daemon is still running prompts for confirmation first, so it doesn't get left running invisibly in the background.
 
-Both are thin wrappers around the exact same underlying scripts used from the terminal — they don't reimplement or change any training, scoring, or alerting logic, just the way you interact with it.
+Both are thin wrappers around the exact same underlying scripts used from the terminal - they don't reimplement or change any training, scoring, or alerting logic, just the way you interact with it. The terminal commands are still documented in full under Getting Started, for anyone who prefers them.
 
 ### 6. Docker Containerization (`docker-compose.yml`)
 
@@ -93,8 +91,8 @@ Before running the application, ensure you have the following installed:
 
 * **Docker & Docker Compose** (for running Kafka)
 * **Python 3.10+**
-* **Required Python Packages:** `pip install -r requirements.txt` (Note: install `shap`, `captum`, `darts`, `pytorch-lightning`, and `streamlit-autorefresh` if you want to use the explainability, NHITS/TiDE, and scheduled auto-run features).
-* **Tkinter**, if you want to use `train_gui.py` or `daemon_gui.py` — this ships by default with the standard python.org Windows installer (make sure "tcl/tk and IDLE" is checked during setup if it's missing).
+* **Required Python Packages:** `pip install -r requirements.txt` (Note: install `shap`, `captum`, `darts`, `pytorch-lightning`, and `streamlit-autorefresh` if you want to use the explainability, NHITS, and scheduled auto-run features).
+* **Tkinter**, for `train_gui.py` and `daemon_gui.py` - this ships by default with the standard python.org Windows installer (make sure "tcl/tk and IDLE" is checked during setup if it's missing).
 
 > **Note on Email Alerts:** Before running `alert_daemon.py` (or `daemon_gui.py`, which runs it underneath), ensure you update the `EMAIL_SENDER`, `EMAIL_PASSWORD` (use an App Password), and `EMAIL_RECEIVER` variables in the script.
 >
@@ -125,7 +123,16 @@ python generate_telemetry.py --sink kafka
 
 ### Step 3: Train the Models
 
-Wait for a few chunks of data to be generated, then train the anomaly detection models. By default, this uses MLflow for tracking.
+Wait for a few chunks of data to be generated, then train the anomaly detection models.
+
+```bash
+python train_gui.py
+
+```
+
+Check the models you want, pick your data source, and click **Train Models**. The window streams the real training output live, including the MLflow confirmation lines, and shows a completion popup once training finishes.
+
+*If you'd rather run this in the terminal:*
 
 ```bash
 # Train on the generated Kafka stream and trim 25% of anomalous data out during training
@@ -133,11 +140,7 @@ python scripts/train.py --source kafka --kafka_topic telemetry.raw --model_dir m
 
 ```
 
-*Add `tide` to `--models` too if you want the lighter-weight Darts forecaster alongside NHITS.*
-
-*Prefer a GUI? Run `python train_gui.py` instead — check the models you want, pick your data source, and click Train Models.*
-
-*To view MLflow training runs, run: `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db` and open `localhost:5000`*
+*To view MLflow training runs either way, run: `mlflow ui --backend-store-uri sqlite:///mlruns/mlflow.db` and open `localhost:5000`*
 
 ### Step 4: Run the Dashboard
 
@@ -155,11 +158,18 @@ streamlit run app/app.py
 To enable automated email alerting for confirmed anomalies:
 
 ```bash
-python alert_daemon.py --source kafka
+python daemon_gui.py
 
 ```
 
-*Prefer a GUI? Run `python daemon_gui.py` instead — pick your data source and click Start Daemon.*
+Pick your data source and click **Start Daemon**. Closing the window while it's still running will ask for confirmation first, so it doesn't keep running invisibly in the background.
+
+*If you'd rather run this in the terminal:*
+
+```bash
+python alert_daemon.py --source kafka
+
+```
 
 ---
 
@@ -167,34 +177,10 @@ python alert_daemon.py --source kafka
 
 To manually check for data drift or diagnose statistical baseline behavior, utilize the dedicated scripts (the same checks are also available directly in the dashboard's "Data Health" tab):
 
-**Data Drift Check:**
-Checks whether the current telemetry data has statistically drifted (using Population Stability Index) from the clean baseline established during training.
-
-```bash
-python scripts/check_drift.py --source kafka --kafka_topic telemetry.raw --model_dir models
-
-```
-
 **Drift Demo Generator:**
-Writes deliberately drifted CSV data (choose the channel and severity) so you can see the Data Health tab react to a real drift event without waiting for one to happen naturally — useful for demos.
+Writes deliberately drifted CSV data (choose the channel and severity) so you can see the Data Health tab react to a real drift event without waiting for one to happen naturally - useful for demos.
 
 ```bash
 python simulate_drift.py --model_dir models --channel cso1 --severity significant
-
-```
-
-**StatDetector Diagnostics:**
-Prints StatDetector's saved calibration and a per-channel score breakdown against live data — including which channel is actually driving any flagged points — useful for tracing exactly why a channel is or isn't being flagged.
-
-```bash
-python diagnose_stat_v2.py --model_dir models --source kafka --kafka_topic telemetry.raw --n_files 20
-
-```
-
-**Sensor Count Check:**
-Quickly confirms which sensor channels a saved model was trained on — useful after any change to the data generator, to confirm your trained models match the current data shape before scoring against it.
-
-```bash
-python check_model_sensors.py models
 
 ```

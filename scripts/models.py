@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import numpy as np
 import pandas as pd
@@ -91,26 +90,26 @@ STAT_SCORE_CEILING = 200.0
 
 
 class StatDetector:
-    def __init__(self, window: int = 30):
+    def __init__(self, window: int = 30, burst_window: int = 15):
         self.window = window
+        self.burst_window = burst_window
         self.sensors: list[str] = []
         self.ch_types: dict = {}
         self.stats: dict = {}      # per-channel calibrated baselines
 
-    def _roll_std(self, s: pd.Series) -> np.ndarray:
-        return s.rolling(self.window, min_periods=max(2, self.window//3)).std().bfill().fillna(0).values
+    def _roll_std(self, s: pd.Series, window: int | None = None) -> np.ndarray:
+        w = window or self.window
+        return s.rolling(w, min_periods=max(2, w//3)).std().bfill().fillna(0).values
 
     def _roll_mean(self, s: pd.Series) -> np.ndarray:
         return s.rolling(self.window, min_periods=1).mean().values
 
     def _roll_slope(self, s: pd.Series) -> np.ndarray:
-
         w = self.window
         net = (s - s.shift(w)).abs()
         return net.fillna(0).values
 
     def fit(self, data: np.ndarray, sensors: list[str], ch_types: dict | None = None):
-
         self.sensors = sensors
         df = pd.DataFrame(data, columns=sensors)
         for i, col in enumerate(sensors):
@@ -134,7 +133,7 @@ class StatDetector:
                 st["slope_std"]  = _robust_floor(np.std(sl), np.mean(sl))
                 st["slope_mean"] = float(np.mean(sl))
             else:  # oscillatory
-                rs = self._roll_std(s)
+                rs = self._roll_std(s, window=self.burst_window)
                 st["std_mean"] = float(np.mean(rs))
                 st["std_std"]  = _robust_floor(np.std(rs), np.mean(rs))
             self.stats[col] = st
@@ -149,23 +148,18 @@ class StatDetector:
             s = df[col].astype(float)
             if t == "binary":
                 rate = pd.Series(s).rolling(self.window, min_periods=1).mean().values
-                # stuck ON = activation rate well above normal
                 per_ch[:, i] = np.maximum(0, (rate - st["rate_mean"]) / st["rate_std"])
             elif t == "constant":
                 rs = self._roll_std(s)
-                # freeze = std well BELOW normal (z is negative → take -z)
                 freeze = np.maximum(0, (st["std_mean"] - rs) / st["std_std"])
-                # level shift = value far from normal level
                 level = np.abs(self._roll_mean(s) - st["level"]) / st["level_scale"]
                 per_ch[:, i] = np.maximum(freeze, level)
             elif t == "drift":
                 sl = self._roll_slope(s)
-                # trend break = slope magnitude well above the NORMAL 95th-pctile
-                # excursion (random walks naturally wander, so baseline off p95)
                 base = st.get("slope_p95", st["slope_mean"])
                 per_ch[:, i] = np.maximum(0, (sl - base) / st["slope_std"])
             else:  # oscillatory
-                rs = self._roll_std(s)
+                rs = self._roll_std(s, window=self.burst_window)
                 # burst = std well above normal
                 per_ch[:, i] = np.maximum(0, (rs - st["std_mean"]) / st["std_std"])
         per_ch = np.minimum(per_ch, STAT_SCORE_CEILING)
@@ -192,7 +186,7 @@ class StatDetector:
                 base = st.get("slope_p95", st["slope_mean"])
                 per_ch[:, i] = np.maximum(0, (sl - base) / st["slope_std"])
             else:
-                rs = self._roll_std(s)
+                rs = self._roll_std(s, window=self.burst_window)
                 per_ch[:, i] = np.maximum(0, (rs - st["std_mean"]) / st["std_std"])
         # Same ceiling as score() — see STAT_SCORE_CEILING docstring.
         return np.minimum(per_ch, STAT_SCORE_CEILING)

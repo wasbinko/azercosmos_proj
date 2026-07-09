@@ -35,18 +35,18 @@ def parse_args():
 
 DATA_DIR = "live_telemetry_stream"
 MODEL_DIR = "models"
-CHECK_INTERVAL_SECONDS = 30      # how often to poll the folder for new files (csv source only)
+CHECK_INTERVAL_SECONDS = 30      
 
 KAFKA_BOOTSTRAP = "localhost:9092"
 KAFKA_TOPIC     = "telemetry.raw"
-KAFKA_GROUP_ID  = "alert-daemon"   # persistent consumer group - offsets survive restarts
+KAFKA_GROUP_ID  = "alert-daemon"  
 
 # Email settings
 EMAIL_SENDER   = "wasbfifa228@gmail.com"
 EMAIL_PASSWORD = "XXXXXXXXXXXXX"     # use an App Password, never a real password
 EMAIL_RECEIVER = "mammadovn228@gmail.com"
 
-MODELS_TO_USE = ["stat", "lstm", "patchtst", "xgboost"]
+MODELS_TO_USE = ["stat", "lstm", "patchtst", "xgboost", "nhits"]
 
 THRESHOLD_METHOD   = "mad"  
 THRESHOLD_K        = 4.0    
