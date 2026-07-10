@@ -23,7 +23,7 @@ def parse_args():
                    help="Where to read new chunks from. csv = poll DATA_DIR for new "
                         "files (original behaviour). kafka = consume from a Kafka "
                         "topic using a persistent consumer group (offsets survive "
-                        "restarts — no processed_files bookkeeping needed).")
+                        "restarts - no processed_files bookkeeping needed).")
     p.add_argument("--kafka_bootstrap", default=KAFKA_BOOTSTRAP)
     p.add_argument("--kafka_topic", default=KAFKA_TOPIC)
     p.add_argument("--kafka_group", default=KAFKA_GROUP_ID)
@@ -41,7 +41,7 @@ CHECK_INTERVAL_SECONDS = 30      # how often to poll the folder for new files (c
 
 KAFKA_BOOTSTRAP = "localhost:9092"
 KAFKA_TOPIC     = "telemetry.raw"
-KAFKA_GROUP_ID  = "alert-daemon"   # persistent consumer group — offsets survive restarts
+KAFKA_GROUP_ID  = "alert-daemon"   # persistent consumer group - offsets survive restarts
 
 EMAIL_SENDER   = "wasbfifa228@gmail.com"
 EMAIL_PASSWORD = "XXXXXXXXXXXXXXX"     # use an App Password, never a real password
@@ -193,7 +193,7 @@ def main():
         return
     if "stat" not in active_bundles:
         print("  WARNING: StatDetector ('stat') not found in models/. Frozen-sensor "
-              "anomalies will NOT be detected — forecasting models are structurally "
+              "anomalies will NOT be detected - forecasting models are structurally "
               "blind to them. Run train.py with 'stat' included to fix this.")
     print(f"✅ Models loaded: {list(active_bundles.keys())}")
 
@@ -318,11 +318,11 @@ def main():
                 elif confirmed and cooldown_active:
                     remaining = int(ALERT_COOLDOWN_SECONDS - (now - last_alert_time))
                     print(f"   Anomaly still ongoing but within cooldown "
-                          f"({remaining}s remaining) — not re-alerting.")
+                          f"({remaining}s remaining) - not re-alerting.")
                 else:
                     flagged_models = [k for k, v in model_counts.items() if v > 0]
                     if flagged_models:
-                        print(f"   ✅ Nominal — {flagged_models} flagged isolated points "
+                        print(f"   ✅ Nominal - {flagged_models} flagged isolated points "
                               f"but consensus rejected them as unconfirmed noise.")
                     else:
                         print("   ✅ Nominal. No anomalies detected.")

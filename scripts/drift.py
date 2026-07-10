@@ -16,7 +16,7 @@ def compute_psi(baseline: np.ndarray, current: np.ndarray, n_bins: int = 10) -> 
     quantiles = np.linspace(0, 100, n_bins + 1)
     edges = np.unique(np.percentile(baseline, quantiles))
     if len(edges) < 3:
-        # Degenerate channel (near-constant) — bucket edges collapse.
+        # Degenerate channel (near-constant) - bucket edges collapse.
         # Fall back to a coarser binning so PSI is still computable.
         edges = np.unique(np.percentile(baseline, np.linspace(0, 100, 4)))
         if len(edges) < 3:
@@ -31,7 +31,7 @@ def compute_psi(baseline: np.ndarray, current: np.ndarray, n_bins: int = 10) -> 
     curr_pct = curr_counts / max(1, curr_counts.sum())
 
     # Floor both at a small epsilon so an empty bucket doesn't produce
-    # log(0) or divide-by-zero — standard PSI implementation detail.
+    # log(0) or divide-by-zero - standard PSI implementation detail.
     eps = 1e-4
     base_pct = np.maximum(base_pct, eps)
     curr_pct = np.maximum(curr_pct, eps)

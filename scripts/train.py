@@ -58,7 +58,7 @@ def get_mlflow(enabled: bool, tracking_dir: str, experiment: str):
     try:
         import mlflow
     except ImportError:
-        print("[MLFLOW] mlflow not installed — skipping tracking. `pip install mlflow` to enable.")
+        print("[MLFLOW] mlflow not installed - skipping tracking. `pip install mlflow` to enable.")
         return None
     os.makedirs(tracking_dir, exist_ok=True)
     db_path = os.path.join(os.path.abspath(tracking_dir), "mlflow.db")
@@ -68,7 +68,7 @@ def get_mlflow(enabled: bool, tracking_dir: str, experiment: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Evaluation against a labeled test set (optional — for real P/R/F1 in MLflow)
+# Evaluation against a labeled test set
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_labeled_eval(eval_dir: str, eval_labels: str):
@@ -230,7 +230,7 @@ def main():
     p.add_argument("--source", choices=["csv", "kafka"], default="csv",
                    help="Where to load training data from. csv = read files from "
                         "--data_dir (original behaviour). kafka = read historical "
-                        "chunks directly from a topic — use this if you're running "
+                        "chunks directly from a topic - use this if you're running "
                         "generate_telemetry.py with --sink kafka and no CSV files "
                         "land on disk anymore.")
     p.add_argument("--data_dir", default="live_telemetry_stream",
@@ -283,7 +283,7 @@ def main():
     p.add_argument("--force_cpu", action="store_true")
     # MLflow tracking
     p.add_argument("--mlflow", dest="use_mlflow", action="store_true", default=True,
-                   help="Enable MLflow tracking (default on — local file store, no server needed).")
+                   help="Enable MLflow tracking (default on - local file store, no server needed).")
     p.add_argument("--no_mlflow", dest="use_mlflow", action="store_false",
                    help="Disable MLflow tracking entirely.")
     p.add_argument("--mlflow_dir", default="mlruns",
@@ -432,7 +432,7 @@ def main():
                     if mlflow:
                         mlflow.log_metrics({f"eval_{k}": v for k,v in metrics.items()})
 
-        # ── NHITS (via Darts) — opt-in, not trained by default ──
+        # ── NHITS (via Darts) - opt-in, not trained by default ──
         if "nhits" in args.models:
             print(f"\n{'='*50}\n[NHITS]\n{'='*50}")
             if not NHITS_AVAILABLE:
@@ -496,7 +496,7 @@ def main():
                         if mlflow:
                             mlflow.log_metrics({f"eval_{k}": v for k, v in metrics.items()})
 
-        # ── TiDE (via Darts) — opt-in, not trained by default ──
+        # ── TiDE (via Darts) - opt-in, not trained by default ──
         if "tide" in args.models:
             print(f"\n{'='*50}\n[TiDE]\n{'='*50}")
             if not TIDE_AVAILABLE:

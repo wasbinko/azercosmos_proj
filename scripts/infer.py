@@ -52,7 +52,7 @@ def load_all(model_dir):
                 bundles[name] = pickle.load(open(path, "rb")); print(f"[LOAD] {name:10} ✓")
             except Exception as e:
                 print(f"[LOAD] {name:10} ✗ ({e})")
-    # NHITS is opt-in (heavier third-party dependency) — only attempt if both
+    # NHITS is opt-in (heavier third-party dependency) - only attempt if both
     # the model files exist AND darts/pytorch-lightning are installed on this
     # machine. Missing either is not an error, just "not available here".
     nhits_pt   = f"{model_dir}/nhits.pt"
@@ -62,7 +62,7 @@ def load_all(model_dir):
             print(f"[LOAD] {'nhits':10} ✗ (model file found, but the darts/pytorch-lightning "
                   f"import failed. Real error: {NHITS_IMPORT_ERROR}. If you've already run "
                   f"`pip install darts pytorch-lightning`, this is likely a version mismatch "
-                  f"between them and your installed torch — check the error above for the "
+                  f"between them and your installed torch - check the error above for the "
                   f"specific package/class it names.)")
         else:
             try:

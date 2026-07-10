@@ -22,7 +22,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       # Auto-create the telemetry.raw topic on first message if it doesn't
-      # exist yet — convenient for local development. Create it explicitly
+      # exist yet - convenient for local development. Create it explicitly
       # (see README below) if you want control over partitions/retention.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       CLUSTER_ID: "telemetry-platform-local-cluster"

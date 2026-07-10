@@ -49,11 +49,11 @@ def explain_forecaster_row(bundle: dict, raw_data: np.ndarray, row_idx: int,
     if row_idx < window or row_idx >= len(ds):
         raise ValueError(
             f"row_idx {row_idx} needs at least {window} rows of history before it "
-            f"(data has {len(ds)} rows total) — pick a later timestep."
+            f"(data has {len(ds)} rows total) - pick a later timestep."
         )
 
     # The window that predicts row_idx is the `window` rows immediately
-    # before it — matches make_forecast_windows()'s end_idx = start + window.
+    # before it - matches make_forecast_windows()'s end_idx = start + window.
     x_window = ds[row_idx - window: row_idx]              # (window, C)
     y_actual = ds[row_idx]                                 # (C,)
 
@@ -124,7 +124,7 @@ def plain_summary(result: dict) -> str:
     pred, actual = result["predicted"], result["actual"]
     direction = "much higher than" if actual > pred else "much lower than"
     return (f"The model expected **{ch}** to read around **{pred:.2f}**, "
-            f"but it actually read **{actual:.2f}** — {direction} expected.")
+            f"but it actually read **{actual:.2f}** - {direction} expected.")
 
 
 def plain_feature_reasons(top_features: list[tuple[str, float]], max_items: int = 3) -> list[dict]:
@@ -144,7 +144,7 @@ def plain_feature_reasons(top_features: list[tuple[str, float]], max_items: int 
 
 def plain_attribution_reasons(top_cells: list[tuple[str, int, float]], max_items: int = 3) -> list[dict]:
     """Same idea as plain_feature_reasons but for Captum's (channel, seconds_ago,
-    value) cells — used for the forecaster explanations."""
+    value) cells - used for the forecaster explanations."""
     items = top_cells[:max_items]
     if not items:
         return []
@@ -170,7 +170,7 @@ def explain_xgboost_row(bundle: dict, raw_data: np.ndarray, row_idx: int,
         raise KeyError(
             f"XGBoost bundle is missing expected key(s): {missing}. "
             f"Available keys: {list(bundle.keys())}. This usually means the "
-            f"model was trained with a different version of train.py — retrain "
+            f"model was trained with a different version of train.py - retrain "
             f"to refresh models/xgboost.pkl."
         )
 

@@ -1,11 +1,3 @@
-"""
-Telemetry Generator Control — a small desktop window, no terminal required.
-Run with: python telemetry_gui.py
-(place this file in the project root, alongside generate_telemetry.py)
-
-Thin wrapper around generate_telemetry.py -- same logic, same behavior,
-just a window instead of typing commands.
-"""
 import sys, os, subprocess, threading, queue
 
 try:

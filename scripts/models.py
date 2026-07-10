@@ -77,7 +77,7 @@ def rolling_features(data: np.ndarray, sensors: list[str],
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Statistical detector — purpose-built for these anomaly archetypes
+# Statistical detector - purpose-built for these anomaly archetypes
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _robust_floor(computed_std: float, reference_value: float,
@@ -188,7 +188,7 @@ class StatDetector:
             else:
                 rs = self._roll_std(s, window=self.burst_window)
                 per_ch[:, i] = np.maximum(0, (rs - st["std_mean"]) / st["std_std"])
-        # Same ceiling as score() — see STAT_SCORE_CEILING docstring.
+        # Same ceiling as score() - see STAT_SCORE_CEILING docstring.
         return np.minimum(per_ch, STAT_SCORE_CEILING)
 
 

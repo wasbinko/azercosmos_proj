@@ -13,7 +13,7 @@ def parse_args():
     p.add_argument("--source", choices=["csv", "kafka"], default="csv",
                    help="Where to read recent telemetry from. csv = read files "
                         "from --data_dir (original behaviour). kafka = read the "
-                        "most recent chunks directly from a topic — use this if "
+                        "most recent chunks directly from a topic - use this if "
                         "you're running generate_telemetry.py with --sink kafka "
                         "and no longer have CSV files landing in a folder.")
     p.add_argument("--data_dir", default="live_telemetry_stream",
@@ -49,7 +49,7 @@ def main():
     baseline_path = os.path.join(args.model_dir, "drift_baseline.pkl")
     if not os.path.exists(baseline_path):
         print(f"ERROR: {baseline_path} not found.")
-        print("This file is created automatically by train.py — retrain with the "
+        print("This file is created automatically by train.py - retrain with the "
               "current version of train.py to generate it.")
         sys.exit(3)
     baseline = pickle.load(open(baseline_path, "rb"))
@@ -77,7 +77,7 @@ def main():
     print("=" * 66)
     source_desc = f"{args.n_files} recent files" if args.source == "csv" else \
                   f"{args.n_files} recent Kafka chunks (topic '{args.kafka_topic}')"
-    print(f"DRIFT CHECK — {len(df):,} rows from {source_desc}")
+    print(f"DRIFT CHECK - {len(df):,} rows from {source_desc}")
     print("=" * 66)
     print(f"\n{'Channel':10} {'PSI':>8}  {'Status':12} {'Baseline mean/std':>20} "
           f"{'Current mean/std':>20}")
@@ -91,11 +91,11 @@ def main():
     if status == "stable":
         print("No meaningful drift detected. Current models should still be reliable.")
     elif status == "moderate":
-        print("Some channels have drifted moderately. Worth keeping an eye on — not")
+        print("Some channels have drifted moderately. Worth keeping an eye on - not")
         print("urgent, but consider retraining if this persists over several checks.")
     else:
         print("At least one channel has drifted significantly. The trained models'")
-        print("baseline no longer reflects current normal behaviour — detection")
+        print("baseline no longer reflects current normal behaviour - detection")
         print("quality may be degraded. Consider retraining:")
         if args.source == "csv":
             print(f"    python scripts/train.py --data_dir {args.data_dir} "

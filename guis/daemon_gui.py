@@ -131,10 +131,6 @@ class DaemonGUI:
 
     def _run_daemon(self, cmd):
         try:
-            # Force UTF-8 for the child process's own stdout -- see the same
-            # fix and explanation in train_gui.py. alert_daemon.py prints
-            # Unicode characters too (the shield emoji, arrows, etc.), so it
-            # would hit the identical Windows cp1252 crash without this.
             child_env = os.environ.copy()
             child_env["PYTHONIOENCODING"] = "utf-8"
             self.process = subprocess.Popen(
