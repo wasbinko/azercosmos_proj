@@ -16,12 +16,15 @@ MAX_LOG_LINES = 2000   # trim old lines past this so a long-running daemon
 
 
 def build_daemon_command(python_exe: str, script_path: str, source: str,
-                         kafka_bootstrap: str, kafka_topic: str, kafka_group: str) -> list[str]:
+                         kafka_bootstrap: str, kafka_topic: str, kafka_group: str,
+                         email_receiver: str = "") -> list[str]:
     cmd = [python_exe, "-u", script_path, "--source", source]
     if source == "kafka":
         cmd += ["--kafka_bootstrap", kafka_bootstrap,
                 "--kafka_topic", kafka_topic,
                 "--kafka_group", kafka_group]
+    if email_receiver.strip():
+        cmd += ["--email_receiver", email_receiver.strip()]
     return cmd
 
 
@@ -34,7 +37,7 @@ class DaemonGUI:
 
         self.log_queue = queue.Queue()
         self.process = None
-        self.project_root = os.path.dirname(os.path.abspath(__file__))
+        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._log_line_count = 0
 
         self._build_ui()
@@ -69,10 +72,15 @@ class DaemonGUI:
                                           width=30, state="enabled")
         self.kafka_group_entry.grid(row=3, column=1, sticky="w", pady=(4, 0))
 
-        note = ("Data folder, model folder, and email sender are set as constants inside "
-                "alert_daemon.py itself, not here - edit that file directly to change them.")
+        ttk.Label(source_frame, text="Send alerts to:").grid(row=4, column=0, sticky="w", pady=(8, 0))
+        self.email_receiver_var = tk.StringVar(value="")
+        ttk.Entry(source_frame, textvariable=self.email_receiver_var, width=30).grid(
+            row=4, column=1, sticky="w", pady=(8, 0))
+
+        note = ("Leave \"Send alerts to\" blank to use the default receiver set inside "
+                "alert_daemon.py.")
         ttk.Label(source_frame, text=note, wraplength=650, foreground="#555").grid(
-            row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
 
         button_frame = ttk.Frame(self.root)
         button_frame.pack(pady=8)
@@ -107,6 +115,7 @@ class DaemonGUI:
             kafka_bootstrap=self.kafka_bootstrap_var.get(),
             kafka_topic=self.kafka_topic_var.get(),
             kafka_group=self.kafka_group_var.get(),
+            email_receiver=self.email_receiver_var.get(),
         )
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
@@ -122,6 +131,10 @@ class DaemonGUI:
 
     def _run_daemon(self, cmd):
         try:
+            # Force UTF-8 for the child process's own stdout -- see the same
+            # fix and explanation in train_gui.py. alert_daemon.py prints
+            # Unicode characters too (the shield emoji, arrows, etc.), so it
+            # would hit the identical Windows cp1252 crash without this.
             child_env = os.environ.copy()
             child_env["PYTHONIOENCODING"] = "utf-8"
             self.process = subprocess.Popen(

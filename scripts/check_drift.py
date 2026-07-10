@@ -27,7 +27,6 @@ def parse_args():
 
 
 def load_recent_data(args) -> pd.DataFrame | None:
-    """Fetch the most recent telemetry, from whichever source was requested."""
     if args.source == "csv":
         files = sorted(glob.glob(os.path.join(args.data_dir, "*.csv")))[-args.n_files:]
         if not files:

@@ -48,7 +48,7 @@ class TrainingGUI:
         self.model_vars = {}
         self.log_queue = queue.Queue()
         self.process = None
-        self.project_root = os.path.dirname(os.path.abspath(__file__))
+        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
         self._build_ui()
         self._poll_queue()
@@ -74,13 +74,13 @@ class TrainingGUI:
 
         ttk.Label(source_frame, text="CSV folder:").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.csv_dir_var = tk.StringVar(value="live_telemetry_stream")
-        self.csv_entry = ttk.Entry(source_frame, textvariable=self.csv_dir_var, width=42)
+        self.csv_entry = ttk.Entry(source_frame, textvariable=self.csv_dir_var, width=42, state="disabled")
         self.csv_entry.grid(row=1, column=1, sticky="w", pady=(8, 0))
 
         ttk.Label(source_frame, text="Kafka topic:").grid(row=2, column=0, sticky="w", pady=(4, 0))
         self.kafka_topic_var = tk.StringVar(value="telemetry.raw")
         self.kafka_entry = ttk.Entry(source_frame, textvariable=self.kafka_topic_var,
-                                    width=42, state="disabled")
+                                    width=42)
         self.kafka_entry.grid(row=2, column=1, sticky="w", pady=(4, 0))
 
         opts_frame = ttk.LabelFrame(self.root, text="Options", padding=10)

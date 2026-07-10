@@ -5,13 +5,15 @@ import argparse
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import warnings
 
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="kafka")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
 
 OUTPUT_FOLDER = "live_telemetry_stream"
 ROWS_PER_FILE = 300     # Exactly 5 minutes at 1 Hz
 INTERVAL_SECONDS = 300 
-ANOMALY_PROBABILITY = 0.25 
+ANOMALY_PROBABILITY = 0.25
 
 
 def generate_telemetry_chunk(start_time, num_rows, inject_anomaly=False,

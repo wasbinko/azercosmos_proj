@@ -23,10 +23,12 @@ def parse_args():
                    help="Where to read new chunks from. csv = poll DATA_DIR for new "
                         "files (original behaviour). kafka = consume from a Kafka "
                         "topic using a persistent consumer group (offsets survive "
-                        "restarts - no processed_files bookkeeping needed).")
+                        "restarts — no processed_files bookkeeping needed).")
     p.add_argument("--kafka_bootstrap", default=KAFKA_BOOTSTRAP)
     p.add_argument("--kafka_topic", default=KAFKA_TOPIC)
     p.add_argument("--kafka_group", default=KAFKA_GROUP_ID)
+    p.add_argument("--email_receiver", default=None,
+                   help="Overrides the EMAIL_RECEIVER constant if set")
     return p.parse_args()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -35,27 +37,27 @@ def parse_args():
 
 DATA_DIR = "live_telemetry_stream"
 MODEL_DIR = "models"
-CHECK_INTERVAL_SECONDS = 30      
+CHECK_INTERVAL_SECONDS = 30      # how often to poll the folder for new files (csv source only)
 
 KAFKA_BOOTSTRAP = "localhost:9092"
 KAFKA_TOPIC     = "telemetry.raw"
-KAFKA_GROUP_ID  = "alert-daemon"  
+KAFKA_GROUP_ID  = "alert-daemon"   # persistent consumer group — offsets survive restarts
 
-# Email settings
 EMAIL_SENDER   = "wasbfifa228@gmail.com"
-EMAIL_PASSWORD = "XXXXXXXXXXXXX"     # use an App Password, never a real password
+EMAIL_PASSWORD = "XXXXXXXXXXXXXXX"     # use an App Password, never a real password
 EMAIL_RECEIVER = "mammadovn228@gmail.com"
 
-MODELS_TO_USE = ["stat", "lstm", "patchtst", "xgboost", "nhits"]
+MODELS_TO_USE = ["stat", "lstm", "patchtst", "xgboost"]
 
-THRESHOLD_METHOD   = "mad"  
-THRESHOLD_K        = 4.0    
+THRESHOLD_METHOD   = "mad"   
+THRESHOLD_K        = 4.0     
 STAT_K             = 4.0     
 SCORE_SMOOTHING_S  = 5       
 MIN_DURATION_S     = 10      
 
 BUFFER_CHUNKS = 10
-ALERT_COOLDOWN_SECONDS = 0   # had this for anyone that might need to use this.
+
+ALERT_COOLDOWN_SECONDS = 0   
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -81,7 +83,6 @@ def linear_threshold(sc: np.ndarray, k: float) -> float:
 
 
 def log_threshold(sc: np.ndarray, method: str, k: float) -> float:
-
     nonzero = sc[sc > 1e-6]
     if len(nonzero) < max(10, int(0.05 * len(sc))):
         return float(np.percentile(sc, 99.5))
@@ -120,7 +121,6 @@ def regions(pred: np.ndarray):
 
 def smart_consensus(predictions: dict, scores: dict, stat_thresholds: tuple,
                     min_forecaster_agree: int = 2) -> np.ndarray:
-
     fc_names = [n for n in ("lstm", "patchtst", "nhits", "xgboost") if n in predictions]
     fc_vote = sum(predictions[n] for n in fc_names) if fc_names else None
     fc_strong_agree = (fc_vote >= min_forecaster_agree).astype(int) if fc_vote is not None else None
@@ -149,7 +149,7 @@ def smart_consensus(predictions: dict, scores: dict, stat_thresholds: tuple,
 def send_anomaly_email(filename: str, model_counts: dict, n_confirmed_regions: int,
                        confirmed_duration_s: int):
     msg = EmailMessage()
-    msg['Subject'] = f"CONFIRMED Telemetry Anomaly ({filename})"
+    msg['Subject'] = f" CONFIRMED Telemetry Anomaly ({filename})"
     msg['From'] = EMAIL_SENDER
     msg['To']   = EMAIL_RECEIVER
 
@@ -180,7 +180,11 @@ def send_anomaly_email(filename: str, model_counts: dict, n_confirmed_regions: i
 
 def main():
     args = parse_args()
+    global EMAIL_RECEIVER
+    if args.email_receiver:
+        EMAIL_RECEIVER = args.email_receiver
     print("  Starting Telemetry Watchdog Daemon...")
+    print(f"   Alerts will be sent to: {EMAIL_RECEIVER}")
 
     bundles = load_all(MODEL_DIR)
     active_bundles = {k: v for k, v in bundles.items() if k in MODELS_TO_USE}
@@ -188,14 +192,14 @@ def main():
         print("No trained models found. Exiting.")
         return
     if "stat" not in active_bundles:
-        print("WARNING: StatDetector ('stat') not found in models/. Frozen-sensor "
-              "anomalies will NOT be detected - forecasting models are structurally "
+        print("  WARNING: StatDetector ('stat') not found in models/. Frozen-sensor "
+              "anomalies will NOT be detected — forecasting models are structurally "
               "blind to them. Run train.py with 'stat' included to fix this.")
     print(f"✅ Models loaded: {list(active_bundles.keys())}")
 
     kafka_consumer = None
     if args.source == "csv":
-        print(f"👀 Watching folder: ./{DATA_DIR}/")
+        print(f" Watching folder: ./{DATA_DIR}/")
     else:
         from kafka_io import TelemetryConsumer
         try:
@@ -207,16 +211,15 @@ def main():
             print(f"ERROR: could not connect to Kafka broker at {args.kafka_bootstrap}: {e}")
             print("Check that the broker is running (see docker-compose.yml) and reachable.")
             return
-        print(f"Consuming Kafka topic '{args.kafka_topic}' @ {args.kafka_bootstrap} "
+        print(f" Consuming Kafka topic '{args.kafka_topic}' @ {args.kafka_bootstrap} "
               f"(consumer group '{args.kafka_group}')")
 
-    print(f"Detection: smart consensus | "
+    print(f"  Detection: smart consensus | "
           f"stat_k={STAT_K} | forecaster {THRESHOLD_METHOD} k={THRESHOLD_K} | "
           f"smoothing={SCORE_SMOOTHING_S}s | min_duration={MIN_DURATION_S}s | "
           f"buffer={BUFFER_CHUNKS} chunks")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
     processed_files = set(glob.glob(os.path.join(DATA_DIR, "*.csv"))) if args.source == "csv" else None
 
     chunk_buffer = deque(maxlen=BUFFER_CHUNKS)   # rolling context of recent DataFrames
@@ -224,7 +227,6 @@ def main():
 
     try:
         while True:
-            # ── Fetch new chunks, csv or kafka, into a uniform (id, df) list ──
             if args.source == "csv":
                 current_files = set(glob.glob(os.path.join(DATA_DIR, "*.csv")))
                 new_paths = sorted(current_files - processed_files)
@@ -233,7 +235,7 @@ def main():
                     try:
                         new_chunks.append((os.path.basename(file_path), pd.read_csv(file_path)))
                     except Exception as e:
-                        print(f"   Could not read {os.path.basename(file_path)}: {e}")
+                        print(f"   ⚠️ Could not read {os.path.basename(file_path)}: {e}")
                     processed_files.add(file_path)
             else:
                 polled = kafka_consumer.poll_new_chunks(max_records=50)
@@ -244,7 +246,6 @@ def main():
 
                 chunk_buffer.append(df_new)
 
-               #also maybe useful, if needed change to 900 or more.
                 buffered_df = pd.concat(list(chunk_buffer), ignore_index=True)
                 if len(buffered_df) < 300:
                     print(f"   Building context buffer ({len(buffered_df)} rows so far)... skipping scoring.")
@@ -265,7 +266,6 @@ def main():
                 for name, sc in raw_scores.items():
                     sc_smooth = smooth_scores(sc, SCORE_SMOOTHING_S)
                     if name in LINEAR_SCORE_MODELS:
-
                         saved_stat = active_bundles.get(name, {})
                         if "threshold_strong" in saved_stat and "threshold_weak" in saved_stat:
                             thr = saved_stat.get("threshold_p995", saved_stat["threshold_weak"])
@@ -279,17 +279,15 @@ def main():
                             print(f"   {name}: no saved nominal threshold found, using live "
                                   f"median+MAD (retrain with current train.py to fix)")
                     else:
- 
                         saved_bundle = active_bundles.get(name, {})
                         saved_thr = saved_bundle.get("threshold_p995")
                         if saved_thr is not None:
                             thr = saved_thr
                         else:
                             thr = log_threshold(sc_smooth, THRESHOLD_METHOD, THRESHOLD_K)
-                            print(f"   ⚠️ {name}: no saved nominal threshold found, using live "
+                            print(f"   {name}: no saved nominal threshold found, using live "
                                   f"log-MAD (retrain with current train.py to fix)")
                     pred = (sc_smooth > thr).astype(int)
-
                     win = active_bundles.get(name, {}).get("window")
                     if win:
                         pred[:min(win, len(pred))] = 0
@@ -314,17 +312,17 @@ def main():
 
                 if confirmed and not cooldown_active:
                     total_dur = sum(e - s for s, e in confirmed)
-                    print(f"   CONFIRMED anomaly: {len(confirmed)} region(s), {total_dur}s total.")
+                    print(f"   CONFIRMED anomaly: {len(confirmed)} region(s).")
                     send_anomaly_email(chunk_id, model_counts, len(confirmed), total_dur)
                     last_alert_time = now
                 elif confirmed and cooldown_active:
                     remaining = int(ALERT_COOLDOWN_SECONDS - (now - last_alert_time))
                     print(f"   Anomaly still ongoing but within cooldown "
-                          f"({remaining}s remaining) - not re-alerting.")
+                          f"({remaining}s remaining) — not re-alerting.")
                 else:
                     flagged_models = [k for k, v in model_counts.items() if v > 0]
                     if flagged_models:
-                        print(f"   ✅ Nominal - {flagged_models} flagged isolated points "
+                        print(f"   ✅ Nominal — {flagged_models} flagged isolated points "
                               f"but consensus rejected them as unconfirmed noise.")
                     else:
                         print("   ✅ Nominal. No anomalies detected.")
@@ -332,7 +330,7 @@ def main():
             time.sleep(CHECK_INTERVAL_SECONDS)
 
     except KeyboardInterrupt:
-        print("\nWatchdog stopped.")
+        print("\n Watchdog stopped.")
     finally:
         if kafka_consumer is not None:
             kafka_consumer.close()
